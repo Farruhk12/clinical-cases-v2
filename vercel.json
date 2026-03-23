@@ -5,6 +5,12 @@
   "outputDirectory": "dist",
   "cleanUrls": false,
   "trailingSlash": false,
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 60,
+      "includeFiles": "server/**\nsrc/**"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/:path*",
