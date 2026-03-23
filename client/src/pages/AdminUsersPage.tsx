@@ -1,6 +1,7 @@
 import { Navigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/auth-context";
+import { apiFetch } from "@/lib/api-fetch";
 
 type UserRow = {
   id: string;
@@ -54,8 +55,8 @@ export function AdminUsersPage() {
     setLoading(true);
     try {
       const [uRes, rRes] = await Promise.all([
-        fetch("/api/admin/users"),
-        fetch("/api/reference"),
+        apiFetch("/api/admin/users"),
+        apiFetch("/api/reference"),
       ]);
       if (!uRes.ok || !rRes.ok) {
         setError("Не удалось загрузить данные");
@@ -136,7 +137,7 @@ export function AdminUsersPage() {
         ? `/api/admin/users/${editingId}`
         : "/api/admin/users";
       const method = editingId ? "PATCH" : "POST";
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -158,7 +159,9 @@ export function AdminUsersPage() {
   const handleDelete = async (u: UserRow) => {
     if (!window.confirm(`Удалить пользователя ${u.login}?`)) return;
     try {
-      const res = await fetch(`/api/admin/users/${u.id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/admin/users/${u.id}`, {
+        method: "DELETE",
+      });
       const json = await res.json();
       if (!res.ok) {
         alert(json.error || "Не удалось удалить");

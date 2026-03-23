@@ -3,6 +3,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import path from "path";
 import { fileURLToPath } from "url";
+import { corsMiddleware } from "./cors";
 import { registerApi } from "./registerApi";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -11,6 +12,7 @@ const port = Number(process.env.PORT ?? 3001);
 
 app.use(express.json({ limit: "4mb" }));
 app.use(cookieParser());
+app.use(corsMiddleware());
 
 registerApi(app);
 

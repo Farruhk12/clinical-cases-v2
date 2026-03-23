@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "react-router-dom";
 import { useState } from "react";
+import { apiFetch } from "@/lib/api-fetch";
 import { downloadCasePptx } from "@/lib/downloadCasePptx";
 
 export function CaseRowActions({
@@ -29,7 +30,7 @@ export function CaseRowActions({
     if (!ok) return;
     setBusy(true);
     try {
-      const res = await fetch(`/api/cases/${caseId}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/cases/${caseId}`, { method: "DELETE" });
       const j = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
         setError(

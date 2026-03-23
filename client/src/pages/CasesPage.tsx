@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { CaseRowActions } from "@/components/case-row-actions";
 import { useAuth } from "@/auth-context";
+import { apiFetch } from "@/lib/api-fetch";
 import type { CaseListItem } from "~lib/case-list";
 
 export function CasesPage() {
@@ -12,7 +13,7 @@ export function CasesPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await fetch("/api/cases");
+      const res = await apiFetch("/api/cases");
       if (!res.ok) {
         if (!cancelled) setError("Не удалось загрузить кейсы");
         return;

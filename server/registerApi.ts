@@ -8,10 +8,8 @@ import { buildCasePptxBuffer } from "../src/lib/case-export-pptx";
 import { asTransactionSql, getSql } from "../src/lib/db";
 import { requireUser, sendAuth, errorResponse } from "../src/lib/api-auth";
 import { isStaff, canManageCase } from "../src/lib/authz";
-import {
-  createSessionToken,
-  SESSION_COOKIE_NAME,
-} from "../src/lib/session-token";
+import { createSessionToken } from "../src/lib/session-token";
+import { clearSessionCookie, setSessionCookie } from "./session-cookie";
 import type { Role } from "../src/types/db";
 import { routeParam } from "./param";
 import { registerRestRoutes } from "./registerRest";
@@ -85,14 +83,7 @@ export function registerApi(app: Express) {
         role: user.role as Role,
         departmentId: user.departmentId,
       });
-      const maxAge = 60 * 60 * 24 * 7;
-      res.cookie(SESSION_COOKIE_NAME, token, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        maxAge: maxAge * 1000,
-        secure: process.env.NODE_ENV === "production",
-      });
+      setSessionCookie(res, token);
       res.json({ ok: true });
     } catch (err) {
       console.error("[api/auth/login]", err);
@@ -101,7 +92,7 @@ export function registerApi(app: Express) {
   });
 
   app.post("/api/auth/logout", (_req: Request, res: Response) => {
-    res.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+    clearSessionCookie(res);
     res.json({ ok: true });
   });
 

@@ -6,6 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { apiFetch } from "@/lib/api-fetch";
 
 export type AuthUser = {
   id: string;
@@ -33,7 +34,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    const res = await fetch("/api/auth/session");
+    const res = await apiFetch("/api/auth/session");
     const text = await res.text();
     let j: { user: AuthUser | null } = { user: null };
     if (text) {
@@ -53,11 +54,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signIn = useCallback(
     async (login: string, password: string) => {
       try {
-        const res = await fetch("/api/auth/login", {
+        const res = await apiFetch("/api/auth/login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ login, password }),
         });
+        const ct = res.headers.get("content-type") ?? "";
+        if (res.ok && !ct.includes("application/json")) {
+          return {
+            ok: false as const,
+            error:
+              "Ответ не от API (ожидался JSON). На Vercel задайте VITE_API_BASE_URL на URL сервера с Express и CORS_ORIGIN на URL фронта — см. .env.example.",
+          };
+        }
         if (!res.ok) {
           const raw = await res.text();
           let msg: string | undefined;
@@ -84,7 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return {
           ok: false as const,
           error:
-            "Нет ответа от API. Часто это порт 3001 занят (EADDRINUSE) — закройте лишний процесс или задайте другой PORT в .env и перезапустите npm run dev.",
+            "Нет ответа от API. Локально: проверьте npm run dev и порт API. На Vercel: задайте VITE_API_BASE_URL на хост с Express.",
         };
       }
     },
@@ -92,7 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signOut = useCallback(async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
+    await apiFetch("/api/auth/logout", { method: "POST" });
     setUser(null);
   }, []);
 

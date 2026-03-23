@@ -2,6 +2,7 @@ import { Navigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { ReferencesAdmin } from "@/ReferencesAdmin";
 import { useAuth } from "@/auth-context";
+import { apiFetch } from "@/lib/api-fetch";
 
 type RefBundle = {
   departments: { id: string; name: string }[];
@@ -18,7 +19,7 @@ export function AdminReferencesPage() {
     if (!user || user.role !== "ADMIN") return;
     let cancelled = false;
     (async () => {
-      const res = await fetch("/api/reference");
+      const res = await apiFetch("/api/reference");
       if (!res.ok) {
         if (!cancelled) setError("Не удалось загрузить справочники");
         return;

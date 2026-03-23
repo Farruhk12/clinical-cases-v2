@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
 import { IconPencil, IconTrash } from "@/components/icons";
+import { apiFetch } from "@/lib/api-fetch";
 
 type Department = { id: string; name: string };
 type Faculty = { id: string; name: string };
@@ -47,7 +48,7 @@ export function ReferencesAdmin({
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch("/api/admin/reference", {
+      const res = await apiFetch("/api/admin/reference", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kind, name: n }),
@@ -78,7 +79,7 @@ export function ReferencesAdmin({
         editing.kind === "courseLevel"
           ? { name: n, sort: editing.sort }
           : { name: n };
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/admin/reference/${editing.kind}/${encodeURIComponent(editing.id)}`,
         {
           method: "PATCH",
@@ -113,7 +114,7 @@ export function ReferencesAdmin({
     setBusy(true);
     setErr(null);
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api/admin/reference/${kind}/${encodeURIComponent(row.id)}`,
         { method: "DELETE" },
       );

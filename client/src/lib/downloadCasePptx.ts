@@ -1,3 +1,5 @@
+import { apiFetch } from "@/lib/api-fetch";
+
 /**
  * Скачивание экспорта кейса в PPTX (тот же endpoint, что в редакторе).
  */
@@ -6,7 +8,7 @@ export async function downloadCasePptx(
   titleForFile: string,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   try {
-    const res = await fetch(`/api/cases/${caseId}/export/pptx`);
+    const res = await apiFetch(`/api/cases/${caseId}/export/pptx`);
     if (!res.ok) {
       const j = (await res.json().catch(() => ({}))) as { error?: string };
       return {

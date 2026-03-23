@@ -2,6 +2,7 @@ import { useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { NewSessionForm } from "@/NewSessionForm";
 import { useAuth } from "@/auth-context";
+import { apiFetch } from "@/lib/api-fetch";
 import type { CaseListItem } from "~lib/case-list";
 
 type User = { id: string; name: string | null; login: string };
@@ -24,8 +25,8 @@ export function SessionNewPage() {
     setReady(false);
     (async () => {
       const [cRes, gRes] = await Promise.all([
-        fetch("/api/cases"),
-        fetch("/api/study-groups"),
+        apiFetch("/api/cases"),
+        apiFetch("/api/study-groups"),
       ]);
       if (!cRes.ok || !gRes.ok) {
         if (!cancelled) {

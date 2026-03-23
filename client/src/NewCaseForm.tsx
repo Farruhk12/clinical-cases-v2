@@ -1,6 +1,7 @@
 type Department = { id: string; name: string };
 type Faculty = { id: string; name: string };
 type CourseLevel = { id: string; name: string; sort: number };
+import { apiFetch } from "@/lib/api-fetch";
 import { useNavigate } from "react-router-dom";
 import { useMemo, useState } from "react";
 
@@ -61,7 +62,7 @@ export function NewCaseForm({
     if (!canSubmit) return;
     setLoading(true);
     setError(null);
-    const res = await fetch("/api/cases", {
+    const res = await apiFetch("/api/cases", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -2,6 +2,7 @@ import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { CaseEditor } from "@/CaseEditor";
 import { useAuth } from "@/auth-context";
+import { apiFetch } from "@/lib/api-fetch";
 
 type RefBundle = {
   departments: { id: string; name: string }[];
@@ -21,13 +22,13 @@ export function CaseEditPage() {
     if (!user || !caseId) return;
     let cancelled = false;
     (async () => {
-      const cr = await fetch(`/api/cases/${caseId}`);
+      const cr = await apiFetch(`/api/cases/${caseId}`);
       if (!cr.ok) {
         if (!cancelled) navigate("/cases", { replace: true });
         return;
       }
       const cj = (await cr.json()) as { sessionCount?: number };
-      const rr = await fetch("/api/reference");
+      const rr = await apiFetch("/api/reference");
       if (!rr.ok) {
         if (!cancelled) navigate("/cases", { replace: true });
         return;

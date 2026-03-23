@@ -1,4 +1,5 @@
 import type { CaseListItem } from "~lib/case-list";
+import { apiFetch } from "@/lib/api-fetch";
 import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 
@@ -83,7 +84,7 @@ export function NewSessionForm({
     e.preventDefault();
     setLoading(true);
     setError(null);
-    const res = await fetch("/api/sessions", {
+    const res = await apiFetch("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

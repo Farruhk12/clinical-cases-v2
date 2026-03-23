@@ -1,4 +1,5 @@
 import { BlockView } from "@/components/block-view";
+import { apiFetch, apiUrl } from "@/lib/api-fetch";
 import { AiPreliminaryScoresPanel } from "@/components/ai-preliminary-scores-panel";
 import { SessionAnalysisView } from "@/components/session-analysis-view";
 import { preliminaryScoresFromOutcome } from "~lib/session-ai-scores";
@@ -150,7 +151,7 @@ export function SessionRunner({
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await fetch(`/api/sessions/${sessionId}`);
+    const res = await apiFetch(`/api/sessions/${sessionId}`);
     if (!res.ok) {
       setError("Сессия недоступна");
       setLoading(false);
@@ -193,7 +194,7 @@ export function SessionRunner({
   }, [load]);
 
   async function persistDraft(): Promise<boolean> {
-    const res = await fetch(`/api/sessions/${sessionId}`, {
+    const res = await apiFetch(`/api/sessions/${sessionId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -235,7 +236,7 @@ export function SessionRunner({
     setError(null);
     try {
       if (!(await persistDraft())) return;
-      const res = await fetch(`/api/sessions/${sessionId}`, {
+      const res = await apiFetch(`/api/sessions/${sessionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "advance" }),
@@ -255,7 +256,7 @@ export function SessionRunner({
     if (!data || leaderChoice === data.session.leader.id) return;
     setBusy(true);
     setError(null);
-    const res = await fetch(`/api/sessions/${sessionId}`, {
+    const res = await apiFetch(`/api/sessions/${sessionId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -284,7 +285,7 @@ export function SessionRunner({
     setError(null);
     try {
       if (!(await persistDraft())) return;
-      const res = await fetch(`/api/sessions/${sessionId}`, {
+      const res = await apiFetch(`/api/sessions/${sessionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "forceComplete" }),
@@ -304,7 +305,7 @@ export function SessionRunner({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/analyze`, {
+      const res = await apiFetch(`/api/sessions/${sessionId}/analyze`, {
         method: "POST",
       });
       if (!res.ok) {
@@ -327,7 +328,7 @@ export function SessionRunner({
   async function saveOutcome() {
     setBusy(true);
     setError(null);
-    const res = await fetch(`/api/sessions/${sessionId}/outcome`, {
+    const res = await apiFetch(`/api/sessions/${sessionId}/outcome`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -390,7 +391,7 @@ export function SessionRunner({
             )}
             {staff && (
               <a
-                href={`/api/sessions/${sessionId}/export`}
+                href={apiUrl(`/api/sessions/${sessionId}/export`)}
                 className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
               >
                 Экспорт

@@ -8,6 +8,7 @@ type Case = CaseDetail;
 type CaseStage = CaseDetail["stages"][number];
 type StageBlock = CaseStage["blocks"][number];
 import { BlockView } from "@/components/block-view";
+import { apiFetch } from "@/lib/api-fetch";
 import { downloadCasePptx } from "@/lib/downloadCasePptx";
 import { Link, useNavigate } from "react-router-dom";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -80,7 +81,7 @@ export function CaseEditor({
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await fetch(`/api/cases/${caseId}`);
+    const res = await apiFetch(`/api/cases/${caseId}`);
     if (!res.ok) {
       setError("Не удалось загрузить кейс");
       setLoading(false);
@@ -114,7 +115,7 @@ export function CaseEditor({
     setWipingSessions(true);
     setError(null);
     try {
-      const res = await fetch(`/api/cases/${caseId}/sessions`, {
+      const res = await apiFetch(`/api/cases/${caseId}/sessions`, {
         method: "DELETE",
       });
       const j = (await res.json().catch(() => ({}))) as {
@@ -198,7 +199,7 @@ export function CaseEditor({
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`/api/cases/${caseId}`, {
+      const res = await apiFetch(`/api/cases/${caseId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -232,7 +233,7 @@ export function CaseEditor({
     setError(null);
     setFormattingBlockId(blockId);
     try {
-      const res = await fetch("/api/ai/format-block", {
+      const res = await apiFetch("/api/ai/format-block", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -280,7 +281,7 @@ export function CaseEditor({
     setCommittingPreview(true);
     setError(null);
     try {
-      const res = await fetch("/api/ai/format-block", {
+      const res = await apiFetch("/api/ai/format-block", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

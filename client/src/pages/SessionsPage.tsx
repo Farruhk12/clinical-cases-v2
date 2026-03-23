@@ -1,6 +1,7 @@
 import { Link, useSearchParams } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/auth-context";
+import { apiFetch } from "@/lib/api-fetch";
 
 type SessionRow = {
   id: string;
@@ -27,7 +28,7 @@ export function SessionsPage() {
       const q = caseIdFilter
         ? `?caseId=${encodeURIComponent(caseIdFilter)}`
         : "";
-      const res = await fetch(`/api/sessions${q}`);
+      const res = await apiFetch(`/api/sessions${q}`);
       if (!res.ok) {
         if (!cancelled) setError("Не удалось загрузить сессии");
         return;
