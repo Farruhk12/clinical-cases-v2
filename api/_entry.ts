@@ -1,6 +1,6 @@
 /**
- * Vercel Serverless: один обработчик для всего /api/* (rewrite → /api?path=…).
- * Исходный .ts в репозитории — стандартный путь Vercel, без отдельного esbuild.
+ * Исходник для esbuild → api/index.js на Vercel (вся server/ + src/ внутри бандла).
+ * Префикс _ — Vercel не создаёт для этого файла отдельную serverless-функцию.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createApiApp } from "../server/createApiApp";

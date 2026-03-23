@@ -1,6 +1,7 @@
 node_modules
 .next
 dist
+api/index.js
 api/index.mjs
 *.tsbuildinfo
 .env

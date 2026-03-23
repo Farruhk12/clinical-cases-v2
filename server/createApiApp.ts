@@ -10,7 +10,7 @@ export type CreateApiAppOptions = {
   vercelPathRewrite?: boolean;
 };
 
-/** Только REST API — для Vercel Serverless (`api/index.ts`) и локального `server/index.ts`. */
+/** Только REST API — для Vercel (`api/index.js` из `_entry.ts`) и локального `server/index.ts`. */
 export function createApiApp(options?: CreateApiAppOptions) {
   const app = express();
 
