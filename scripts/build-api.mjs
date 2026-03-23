@@ -1,6 +1,7 @@
 /**
  * Собирает api/_entry.ts + server/ + src/ в один api/index.js для Vercel.
- * Файл не должен быть в .gitignore: Vercel не кладёт в деплой игнорируемые пути.
+ * api/index.js хранится в git: иначе при деплое нет маршрута /api до сборки → 404 NOT_FOUND.
+ * После правок в server/ или src/ для API: npm run build и закоммитьте обновлённый api/index.js.
  */
 import { build } from "esbuild";
 
