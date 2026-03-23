@@ -5,6 +5,10 @@
   "outputDirectory": "dist",
   "cleanUrls": false,
   "trailingSlash": false,
+  "functions": {
+    "api/index.ts": { "maxDuration": 60 },
+    "api/ready.ts": { "maxDuration": 10 }
+  },
   "rewrites": [
     {
       "source": "/api/ready",
