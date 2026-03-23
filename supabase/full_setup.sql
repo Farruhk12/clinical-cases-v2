@@ -118,8 +118,8 @@ CREATE TABLE IF NOT EXISTS "CaseSession" (
     "status" "SessionStatus" NOT NULL DEFAULT 'IN_PROGRESS',
     "currentStageOrder" INTEGER NOT NULL,
     "caseVersionSnapshot" INTEGER NOT NULL,
-    "startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "completedAt" TIMESTAMP(3),
+    "startedAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "completedAt" TIMESTAMPTZ(3),
     CONSTRAINT "CaseSession_pkey" PRIMARY KEY ("id")
 );
 
@@ -127,8 +127,8 @@ CREATE TABLE IF NOT EXISTS "StageSubmission" (
     "id" TEXT NOT NULL,
     "caseSessionId" TEXT NOT NULL,
     "caseStageId" TEXT NOT NULL,
-    "submittedAt" TIMESTAMP(3),
-    "openedAt" TIMESTAMP(3),
+    "submittedAt" TIMESTAMPTZ(3),
+    "openedAt" TIMESTAMPTZ(3),
     CONSTRAINT "StageSubmission_pkey" PRIMARY KEY ("id")
 );
 
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS "SessionOutcome" (
     "aiPreliminaryScores" JSONB,
     "teacherGrade" TEXT,
     "teacherComment" TEXT,
-    "finalizedAt" TIMESTAMP(3),
+    "finalizedAt" TIMESTAMPTZ(3),
     CONSTRAINT "SessionOutcome_pkey" PRIMARY KEY ("id")
 );
 

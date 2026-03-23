@@ -60704,6 +60704,43 @@ function parsePreliminaryScoresLoose(v) {
   return { stageScores, averageScore };
 }
 
+// src/lib/to-json-iso-utc.ts
+function toJsonIsoUtc(value) {
+  if (value === void 0) return void 0;
+  if (value === null) return null;
+  if (value instanceof Date) {
+    const t = value.getTime();
+    return Number.isNaN(t) ? null : value.toISOString();
+  }
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/[zZ]$/.test(raw)) {
+    const d2 = new Date(raw);
+    return Number.isNaN(d2.getTime()) ? null : d2.toISOString();
+  }
+  if (/[+-]\d{2}:?\d{2}$/.test(raw)) {
+    const d2 = new Date(raw);
+    return Number.isNaN(d2.getTime()) ? null : d2.toISOString();
+  }
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(normalized)) {
+    const d2 = /* @__PURE__ */ new Date(`${normalized}Z`);
+    return Number.isNaN(d2.getTime()) ? null : d2.toISOString();
+  }
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// src/lib/session-brief-json.ts
+function serializeSessionBriefForJson(s) {
+  return {
+    ...s,
+    startedAt: toJsonIsoUtc(s.startedAt),
+    completedAt: toJsonIsoUtc(s.completedAt),
+    outcome: s.outcome ? { ...s.outcome, finalizedAt: toJsonIsoUtc(s.outcome.finalizedAt) } : null
+  };
+}
+
 // server/session-routes.ts
 var SESSION_ANALYZE_VERSION = "session-analysis-v4";
 function canDriveSession(cs, session) {
@@ -60767,7 +60804,7 @@ function registerSessionRoutes(app2) {
       departmentId: session.user.departmentId,
       caseId
     });
-    res.json({ sessions });
+    res.json({ sessions: sessions.map(serializeSessionBriefForJson) });
   });
   app2.post("/api/sessions", async (req, res) => {
     const a = await requireUser(req);
@@ -60891,7 +60928,14 @@ function registerSessionRoutes(app2) {
         "caseVersionSnapshot", "startedAt", "completedAt"
       FROM "CaseSession" WHERE id = ${sessionId}
     `;
-    res.json({ session: sessOut[0] });
+    const created = sessOut[0];
+    res.json({
+      session: {
+        ...created,
+        startedAt: toJsonIsoUtc(created.startedAt),
+        completedAt: toJsonIsoUtc(created.completedAt)
+      }
+    });
   });
   app2.get("/api/sessions/:sessionId", async (req, res) => {
     const a = await requireUser(req);
@@ -60952,8 +60996,8 @@ function registerSessionRoutes(app2) {
         id: cs.id,
         status: cs.status,
         currentStageOrder: cs.currentStageOrder,
-        startedAt: cs.startedAt,
-        completedAt: cs.completedAt,
+        startedAt: toJsonIsoUtc(cs.startedAt),
+        completedAt: toJsonIsoUtc(cs.completedAt),
         caseVersionSnapshot: cs.caseVersionSnapshot,
         case: stripCase(cs.case),
         studyGroup: {
@@ -60963,7 +61007,10 @@ function registerSessionRoutes(app2) {
           courseLevel: cs.studyGroup.courseLevel
         },
         leader: cs.leader,
-        outcome: outcomeWithScores
+        outcome: outcomeWithScores ? {
+          ...outcomeWithScores,
+          finalizedAt: toJsonIsoUtc(outcomeWithScores.finalizedAt)
+        } : null
       },
       groupMembers,
       canEditSessionSettings,
@@ -60977,16 +61024,16 @@ function registerSessionRoutes(app2) {
       timeline: timelineSubmissions.map((sub) => ({
         stageOrder: sub.stage.order,
         stageTitle: sub.stage.title,
-        submittedAt: sub.submittedAt,
-        openedAt: sub.openedAt,
+        submittedAt: toJsonIsoUtc(sub.submittedAt),
+        openedAt: toJsonIsoUtc(sub.openedAt),
         hypotheses: sub.hypotheses,
         questions: sub.questions
       })),
       canEdit,
       analytics: timelineSubmissions.map((sub) => ({
         stageOrder: sub.stage.order,
-        openedAt: sub.openedAt,
-        submittedAt: sub.submittedAt
+        openedAt: toJsonIsoUtc(sub.openedAt),
+        submittedAt: toJsonIsoUtc(sub.submittedAt)
       }))
     });
   });
@@ -61216,8 +61263,16 @@ function registerSessionRoutes(app2) {
           VALUES (${randomUUID2()}, ${csRow.id}, ${teacherGrade}, ${teacherComment}, ${finalizedAt})
         `;
       }
-      const [outcome] = await pool`SELECT * FROM "SessionOutcome" WHERE "caseSessionId" = ${csRow.id}`;
-      res.json({ outcome });
+      const [outcomeRow] = await pool`SELECT * FROM "SessionOutcome" WHERE "caseSessionId" = ${csRow.id}`;
+      if (!outcomeRow) {
+        return errorResponse(res, "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u0440\u043E\u0447\u0438\u0442\u0430\u0442\u044C \u0438\u0442\u043E\u0433 \u0441\u0435\u0441\u0441\u0438\u0438", 500);
+      }
+      res.json({
+        outcome: {
+          ...outcomeRow,
+          finalizedAt: toJsonIsoUtc(outcomeRow.finalizedAt)
+        }
+      });
     }
   );
   app2.post(
@@ -61357,7 +61412,10 @@ ${lines.join("\n")}
           "aiPreliminaryScores" = EXCLUDED."aiPreliminaryScores"
       `;
       const outcomeRows = await pool`SELECT * FROM "SessionOutcome" WHERE "caseSessionId" = ${cs.id}`;
-      res.json({ outcome: outcomeRows[0] });
+      const row = outcomeRows[0];
+      res.json({
+        outcome: row ? { ...row, finalizedAt: toJsonIsoUtc(row.finalizedAt) } : null
+      });
     }
   );
 }
@@ -62018,11 +62076,303 @@ function registerAdminRoutes(app2) {
   });
 }
 
+// src/lib/department-analytics.ts
+async function fetchAllDepartmentsSummary() {
+  const pool = getSql();
+  const rows = await pool`
+    SELECT
+      d.id AS "departmentId",
+      d.name AS "departmentName",
+      COUNT(DISTINCT cs.id)::int AS "sessionsTotal",
+      COUNT(DISTINCT cs.id) FILTER (WHERE cs.status = 'COMPLETED')::int AS "sessionsCompleted",
+      COUNT(DISTINCT cs.id) FILTER (WHERE cs.status = 'IN_PROGRESS')::int AS "sessionsInProgress",
+      COUNT(DISTINCT cs."studyGroupId") FILTER (WHERE cs.id IS NOT NULL)::int AS "uniqueStudyGroups",
+      COUNT(DISTINCT c.id)::int AS "casesTotal",
+      COUNT(DISTINCT cs.id) FILTER (
+        WHERE cs.status = 'COMPLETED' AND o.id IS NOT NULL
+      )::int AS "sessionsWithOutcome",
+      COUNT(DISTINCT cs.id) FILTER (
+        WHERE cs.status = 'COMPLETED'
+          AND o."teacherGrade" IS NOT NULL
+          AND TRIM(o."teacherGrade") <> ''
+      )::int AS "sessionsWithTeacherGrade",
+      COUNT(DISTINCT cs.id) FILTER (
+        WHERE o."aiAnalysis" IS NOT NULL AND TRIM(o."aiAnalysis") <> ''
+      )::int AS "sessionsWithAiAnalysis"
+    FROM "Department" d
+    LEFT JOIN "Case" c ON c."departmentId" = d.id
+    LEFT JOIN "CaseSession" cs ON cs."caseId" = c.id
+    LEFT JOIN "SessionOutcome" o ON o."caseSessionId" = cs.id
+    GROUP BY d.id, d.name
+    ORDER BY d.name ASC
+  `;
+  return rows;
+}
+async function fetchDepartmentSummary(departmentId) {
+  const pool = getSql();
+  const rows = await pool`
+    SELECT
+      d.id AS "departmentId",
+      d.name AS "departmentName",
+      COUNT(DISTINCT cs.id)::int AS "sessionsTotal",
+      COUNT(DISTINCT cs.id) FILTER (WHERE cs.status = 'COMPLETED')::int AS "sessionsCompleted",
+      COUNT(DISTINCT cs.id) FILTER (WHERE cs.status = 'IN_PROGRESS')::int AS "sessionsInProgress",
+      COUNT(DISTINCT cs."studyGroupId") FILTER (WHERE cs.id IS NOT NULL)::int AS "uniqueStudyGroups",
+      COUNT(DISTINCT c.id)::int AS "casesTotal",
+      COUNT(DISTINCT cs.id) FILTER (
+        WHERE cs.status = 'COMPLETED' AND o.id IS NOT NULL
+      )::int AS "sessionsWithOutcome",
+      COUNT(DISTINCT cs.id) FILTER (
+        WHERE cs.status = 'COMPLETED'
+          AND o."teacherGrade" IS NOT NULL
+          AND TRIM(o."teacherGrade") <> ''
+      )::int AS "sessionsWithTeacherGrade",
+      COUNT(DISTINCT cs.id) FILTER (
+        WHERE o."aiAnalysis" IS NOT NULL AND TRIM(o."aiAnalysis") <> ''
+      )::int AS "sessionsWithAiAnalysis"
+    FROM "Department" d
+    LEFT JOIN "Case" c ON c."departmentId" = d.id
+    LEFT JOIN "CaseSession" cs ON cs."caseId" = c.id
+    LEFT JOIN "SessionOutcome" o ON o."caseSessionId" = cs.id
+    WHERE d.id = ${departmentId}
+    GROUP BY d.id, d.name
+  `;
+  return rows[0] ?? null;
+}
+async function fetchStudyGroupStatsForDepartment(departmentId) {
+  const pool = getSql();
+  return pool`
+    SELECT
+      sg.id AS "studyGroupId",
+      sg.name AS "studyGroupName",
+      f.name AS "facultyName",
+      cl.name AS "courseLevelName",
+      COUNT(cs.id)::int AS "sessionsTotal",
+      COUNT(cs.id) FILTER (WHERE cs.status = 'COMPLETED')::int AS "sessionsCompleted",
+      COUNT(cs.id) FILTER (WHERE cs.status = 'IN_PROGRESS')::int AS "sessionsInProgress",
+      (
+        ROUND(
+          AVG(
+            (o."aiPreliminaryScores"->>'averageScore')::double precision
+          ) FILTER (
+            WHERE o."aiPreliminaryScores" IS NOT NULL
+              AND jsonb_typeof(o."aiPreliminaryScores") = 'object'
+              AND (o."aiPreliminaryScores"->>'averageScore') IS NOT NULL
+              AND (o."aiPreliminaryScores"->>'averageScore') ~ '^[0-9]+(\\.[0-9]*)?$'
+          )
+        )
+      )::int AS "avgAiScore",
+      COUNT(DISTINCT cs.id) FILTER (
+        WHERE o."aiPreliminaryScores" IS NOT NULL
+          AND jsonb_typeof(o."aiPreliminaryScores") = 'object'
+          AND (o."aiPreliminaryScores"->>'averageScore') IS NOT NULL
+          AND (o."aiPreliminaryScores"->>'averageScore') ~ '^[0-9]+(\\.[0-9]*)?$'
+      )::int AS "sessionsWithAiScore",
+      (
+        ROUND(
+          AVG(TRIM(o."teacherGrade")::double precision) FILTER (
+            WHERE NULLIF(TRIM(o."teacherGrade"), '') IS NOT NULL
+              AND TRIM(o."teacherGrade") ~ '^[0-9]+(\\.[0-9]*)?$'
+              AND TRIM(o."teacherGrade")::numeric >= 0
+              AND TRIM(o."teacherGrade")::numeric <= 100
+          )
+        )
+      )::int AS "avgTeacherScore",
+      COUNT(DISTINCT cs.id) FILTER (
+        WHERE NULLIF(TRIM(o."teacherGrade"), '') IS NOT NULL
+          AND TRIM(o."teacherGrade") ~ '^[0-9]+(\\.[0-9]*)?$'
+          AND TRIM(o."teacherGrade")::numeric >= 0
+          AND TRIM(o."teacherGrade")::numeric <= 100
+      )::int AS "sessionsWithTeacherNumericScore",
+      NULLIF(
+        ARRAY_TO_STRING(
+          ARRAY_AGG(
+            DISTINCT (
+              CASE
+                WHEN NULLIF(TRIM(o."teacherGrade"), '') IS NOT NULL
+                  AND TRIM(o."teacherGrade") ~ '^[0-9]+(\\.[0-9]*)?$'
+                  AND TRIM(o."teacherGrade")::numeric >= 0
+                  AND TRIM(o."teacherGrade")::numeric <= 100
+                THEN ROUND(TRIM(o."teacherGrade")::numeric)::text || '/100'
+                ELSE NULLIF(TRIM(o."teacherGrade"), '')
+              END
+            )
+          ) FILTER (
+            WHERE o."teacherGrade" IS NOT NULL AND TRIM(o."teacherGrade") <> ''
+          ),
+          ', '
+        ),
+        ''
+      ) AS "teacherGradesSummary",
+      NULLIF(
+        STRING_AGG(
+          LEFT(TRIM(o."teacherComment"), 400),
+          ' • '
+          ORDER BY cs."completedAt" DESC NULLS LAST
+        ) FILTER (
+          WHERE o."teacherComment" IS NOT NULL AND TRIM(o."teacherComment") <> ''
+        ),
+        ''
+      ) AS "teacherEvaluationsText"
+    FROM "CaseSession" cs
+    INNER JOIN "Case" c ON c.id = cs."caseId"
+    INNER JOIN "StudyGroup" sg ON sg.id = cs."studyGroupId"
+    INNER JOIN "Faculty" f ON f.id = sg."facultyId"
+    INNER JOIN "CourseLevel" cl ON cl.id = sg."courseLevelId"
+    LEFT JOIN "SessionOutcome" o ON o."caseSessionId" = cs.id
+    WHERE c."departmentId" = ${departmentId}
+    GROUP BY sg.id, sg.name, f.name, cl.name
+    ORDER BY sg.name ASC
+  `;
+}
+async function fetchCaseStatsForDepartment(departmentId) {
+  const pool = getSql();
+  return pool`
+    SELECT
+      c.id AS "caseId",
+      c.title AS "caseTitle",
+      COUNT(cs.id)::int AS "sessionsTotal",
+      COUNT(cs.id) FILTER (WHERE cs.status = 'COMPLETED')::int AS "sessionsCompleted",
+      COUNT(cs.id) FILTER (WHERE cs.status = 'IN_PROGRESS')::int AS "sessionsInProgress",
+      (
+        ROUND(
+          AVG(
+            (o."aiPreliminaryScores"->>'averageScore')::double precision
+          ) FILTER (
+            WHERE o."aiPreliminaryScores" IS NOT NULL
+              AND jsonb_typeof(o."aiPreliminaryScores") = 'object'
+              AND (o."aiPreliminaryScores"->>'averageScore') IS NOT NULL
+              AND (o."aiPreliminaryScores"->>'averageScore') ~ '^[0-9]+(\\.[0-9]*)?$'
+          )
+        )
+      )::int AS "avgAiScore",
+      COUNT(DISTINCT cs.id) FILTER (
+        WHERE o."aiPreliminaryScores" IS NOT NULL
+          AND jsonb_typeof(o."aiPreliminaryScores") = 'object'
+          AND (o."aiPreliminaryScores"->>'averageScore') IS NOT NULL
+          AND (o."aiPreliminaryScores"->>'averageScore') ~ '^[0-9]+(\\.[0-9]*)?$'
+      )::int AS "sessionsWithAiScore",
+      (
+        ROUND(
+          AVG(TRIM(o."teacherGrade")::double precision) FILTER (
+            WHERE NULLIF(TRIM(o."teacherGrade"), '') IS NOT NULL
+              AND TRIM(o."teacherGrade") ~ '^[0-9]+(\\.[0-9]*)?$'
+              AND TRIM(o."teacherGrade")::numeric >= 0
+              AND TRIM(o."teacherGrade")::numeric <= 100
+          )
+        )
+      )::int AS "avgTeacherScore",
+      COUNT(DISTINCT cs.id) FILTER (
+        WHERE NULLIF(TRIM(o."teacherGrade"), '') IS NOT NULL
+          AND TRIM(o."teacherGrade") ~ '^[0-9]+(\\.[0-9]*)?$'
+          AND TRIM(o."teacherGrade")::numeric >= 0
+          AND TRIM(o."teacherGrade")::numeric <= 100
+      )::int AS "sessionsWithTeacherNumericScore",
+      NULLIF(
+        ARRAY_TO_STRING(
+          ARRAY_AGG(
+            DISTINCT (
+              CASE
+                WHEN NULLIF(TRIM(o."teacherGrade"), '') IS NOT NULL
+                  AND TRIM(o."teacherGrade") ~ '^[0-9]+(\\.[0-9]*)?$'
+                  AND TRIM(o."teacherGrade")::numeric >= 0
+                  AND TRIM(o."teacherGrade")::numeric <= 100
+                THEN ROUND(TRIM(o."teacherGrade")::numeric)::text || '/100'
+                ELSE NULLIF(TRIM(o."teacherGrade"), '')
+              END
+            )
+          ) FILTER (
+            WHERE o."teacherGrade" IS NOT NULL AND TRIM(o."teacherGrade") <> ''
+          ),
+          ', '
+        ),
+        ''
+      ) AS "teacherGradesSummary",
+      NULLIF(
+        STRING_AGG(
+          LEFT(TRIM(o."teacherComment"), 400),
+          ' • '
+          ORDER BY cs."completedAt" DESC NULLS LAST
+        ) FILTER (
+          WHERE o."teacherComment" IS NOT NULL AND TRIM(o."teacherComment") <> ''
+        ),
+        ''
+      ) AS "teacherEvaluationsText"
+    FROM "Case" c
+    LEFT JOIN "CaseSession" cs ON cs."caseId" = c.id
+    LEFT JOIN "SessionOutcome" o ON o."caseSessionId" = cs.id
+    WHERE c."departmentId" = ${departmentId}
+    GROUP BY c.id, c.title
+    ORDER BY c.title ASC
+  `;
+}
+
+// server/analytics-routes.ts
+function registerAnalyticsRoutes(app2) {
+  app2.get("/api/analytics/departments", async (req, res) => {
+    const a = await requireUser(req);
+    if (sendAuth(res, a)) return;
+    const { session } = a;
+    if (!isStaff(session.user.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const qDept = typeof req.query.departmentId === "string" ? req.query.departmentId.trim() : "";
+    if (session.user.role === "TEACHER") {
+      const dept = session.user.departmentId;
+      if (!dept) {
+        return errorResponse(res, "\u0423 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F \u043D\u0435 \u0443\u043A\u0430\u0437\u0430\u043D\u0430 \u043A\u0430\u0444\u0435\u0434\u0440\u0430", 400);
+      }
+      const summary2 = await fetchDepartmentSummary(dept);
+      if (!summary2) {
+        return errorResponse(res, "\u041A\u0430\u0444\u0435\u0434\u0440\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
+      }
+      const [byStudyGroup2, byCase2] = await Promise.all([
+        fetchStudyGroupStatsForDepartment(dept),
+        fetchCaseStatsForDepartment(dept)
+      ]);
+      return res.json({
+        scope: "department",
+        departments: [summary2],
+        byStudyGroup: byStudyGroup2,
+        byCase: byCase2
+      });
+    }
+    if (!qDept) {
+      const departments = await fetchAllDepartmentsSummary();
+      return res.json({
+        scope: "all",
+        departments,
+        byStudyGroup: [],
+        byCase: []
+      });
+    }
+    const pool = getSql();
+    const exists = await pool`
+      SELECT id FROM "Department" WHERE id = ${qDept} LIMIT 1
+    `;
+    if (!exists[0]) {
+      return errorResponse(res, "\u041A\u0430\u0444\u0435\u0434\u0440\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
+    }
+    const summary = await fetchDepartmentSummary(qDept);
+    const [byStudyGroup, byCase] = await Promise.all([
+      fetchStudyGroupStatsForDepartment(qDept),
+      fetchCaseStatsForDepartment(qDept)
+    ]);
+    return res.json({
+      scope: "department",
+      departments: summary ? [summary] : [],
+      byStudyGroup,
+      byCase
+    });
+  });
+}
+
 // server/registerRest.ts
 function registerRestRoutes(app2) {
   registerSessionRoutes(app2);
   registerMiscRoutes(app2);
   registerAdminRoutes(app2);
+  registerAnalyticsRoutes(app2);
 }
 
 // server/registerApi.ts

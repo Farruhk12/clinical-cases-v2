@@ -57,11 +57,11 @@ export function CaseRowActions({
   }
 
   return (
-    <div className="flex flex-col items-end gap-1.5">
-      <div className="flex flex-wrap justify-end gap-2">
+    <div className="flex w-full flex-col gap-1.5 sm:w-auto sm:items-end">
+      <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:justify-end">
         <Link
           to={`/cases/${caseId}/edit`}
-          className="rounded-xl border border-slate-200 px-3.5 py-1.5 text-sm text-slate-600 transition hover:bg-slate-50"
+          className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-200 px-3 py-2 text-center text-sm text-slate-600 transition hover:bg-slate-50 sm:min-h-0 sm:px-3.5 sm:py-1.5"
         >
           Редактировать
         </Link>
@@ -69,7 +69,7 @@ export function CaseRowActions({
           type="button"
           disabled={busy}
           onClick={() => void deleteCase()}
-          className="rounded-xl border border-red-200 px-3.5 py-1.5 text-sm text-red-600 transition hover:bg-red-50 disabled:opacity-60"
+          className="inline-flex min-h-10 items-center justify-center rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600 transition hover:bg-red-50 disabled:opacity-60 sm:min-h-0 sm:px-3.5 sm:py-1.5"
         >
           {busy ? "Удаление..." : "Удалить"}
         </button>
@@ -78,13 +78,13 @@ export function CaseRowActions({
           disabled={pptxBusy}
           onClick={() => void exportPptx()}
           title="Слайды PowerPoint по этапам и блокам (как в базе)"
-          className="rounded-xl border-2 border-emerald-700 !bg-emerald-600 px-3.5 py-1.5 text-sm font-semibold !text-white shadow-sm transition hover:!bg-emerald-700 disabled:opacity-60"
+          className="col-span-2 inline-flex min-h-10 items-center justify-center rounded-xl border-2 border-emerald-700 !bg-emerald-600 px-3 py-2 text-sm font-semibold !text-white shadow-sm transition hover:!bg-emerald-700 disabled:opacity-60 sm:col-span-1 sm:min-h-0 sm:px-3.5 sm:py-1.5"
         >
           {pptxBusy ? "PPTX…" : "Скачать PPTX"}
         </button>
         <Link
           to={`/sessions/new?caseId=${caseId}`}
-          className="rounded-xl bg-slate-900 px-3.5 py-1.5 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800"
+          className="col-span-2 inline-flex min-h-10 items-center justify-center rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 sm:col-span-1 sm:min-h-0 sm:px-3.5 sm:py-1.5"
         >
           Запустить сессию
         </Link>

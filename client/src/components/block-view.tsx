@@ -56,11 +56,11 @@ export function BlockView({
 
   if (blockType === "IMAGE_URL" && imageUrl) {
     return (
-      <figure className="overflow-hidden rounded-2xl border border-slate-200/60 bg-slate-50 p-4">
+      <figure className="overflow-hidden rounded-2xl border border-slate-200/60 bg-slate-50 p-3 sm:p-4">
         <img
           src={imageUrl}
           alt={imageAlt ?? ""}
-          className="max-h-[32rem] w-full rounded-xl object-contain"
+          className="max-h-[50vh] w-full rounded-xl object-contain sm:max-h-[32rem]"
           referrerPolicy="no-referrer"
         />
         {imageAlt && (
@@ -81,9 +81,9 @@ export function BlockView({
 
   if (html && segmented) {
     return (
-      <section className="rounded-2xl border border-slate-200/60 bg-white p-5 shadow-sm sm:p-6">
+      <section className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-sm sm:p-6">
         <div
-          className="case-rich-root prose prose-base max-w-none text-slate-800 prose-p:my-3 prose-p:leading-relaxed first:prose-p:mt-0"
+          className="case-rich-root prose prose-sm max-w-none text-slate-800 prose-p:my-3 prose-p:leading-relaxed first:prose-p:mt-0 sm:prose-base"
           dangerouslySetInnerHTML={{ __html: html }}
         />
       </section>
@@ -92,7 +92,7 @@ export function BlockView({
 
   return (
     <section
-      className={`rounded-2xl border p-5 shadow-sm sm:p-6 ${style.border} ${style.bg} ${style.accent}`}
+      className={`rounded-2xl border p-4 shadow-sm sm:p-6 ${style.border} ${style.bg} ${style.accent}`}
     >
       {style.label && (
         <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-400">
@@ -101,11 +101,11 @@ export function BlockView({
       )}
       {html ? (
         <div
-          className="prose prose-base max-w-none text-slate-800 prose-p:leading-relaxed"
+          className="prose prose-sm max-w-none text-slate-800 prose-p:leading-relaxed sm:prose-base"
           dangerouslySetInnerHTML={{ __html: html }}
         />
       ) : (
-        <p className="whitespace-pre-wrap text-base leading-relaxed text-slate-800">
+        <p className="whitespace-pre-wrap text-[0.9375rem] leading-relaxed text-slate-800 sm:text-base">
           {rawText ?? ""}
         </p>
       )}

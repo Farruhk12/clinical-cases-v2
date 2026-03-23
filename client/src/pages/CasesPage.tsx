@@ -35,12 +35,12 @@ export function CasesPage() {
 
   return (
     <div className="space-y-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="font-display text-3xl font-bold tracking-tight text-slate-900">
+      <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="font-display text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
             Кейсы
           </h1>
-          <p className="mt-1 text-slate-500">
+          <p className="mt-1 text-pretty text-sm text-slate-500 sm:text-base">
             {canEdit
               ? "Создавайте этапы, блоки и скрытый эталон для разбора."
               : "Доступны опубликованные кейсы вашего обучения."}
@@ -49,7 +49,7 @@ export function CasesPage() {
         {canEdit && (
           <Link
             to="/cases/new"
-            className="rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700"
+            className="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 sm:w-auto sm:min-h-0"
           >
             Новый кейс
           </Link>
@@ -66,7 +66,7 @@ export function CasesPage() {
         {cases.map((c) => (
           <li
             key={c.id}
-            className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/80 bg-white/90 p-5 shadow-card backdrop-blur-sm transition hover:border-brand-200/60 hover:shadow-soft"
+            className="flex flex-col gap-4 rounded-2xl border border-white/80 bg-white/90 p-4 shadow-card backdrop-blur-sm transition hover:border-brand-200/60 hover:shadow-soft sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:p-5"
           >
             <div className="min-w-0">
               <p className="font-display text-base font-semibold text-slate-900">
@@ -95,7 +95,7 @@ export function CasesPage() {
             ) : (
               <Link
                 to={`/sessions/new?caseId=${c.id}`}
-                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800"
+                className="inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 sm:w-auto sm:min-h-0 sm:py-2"
               >
                 Запустить сессию
               </Link>

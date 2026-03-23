@@ -3,6 +3,7 @@ import { apiFetch, apiUrl } from "@/lib/api-fetch";
 import { AiPreliminaryScoresPanel } from "@/components/ai-preliminary-scores-panel";
 import { SessionAnalysisView } from "@/components/session-analysis-view";
 import { preliminaryScoresFromOutcome } from "~lib/session-ai-scores";
+import { parseScore100 } from "@/lib/score-100";
 import type { BlockType, Role } from "~types/db";
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -102,7 +103,7 @@ function Collapsible({
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center justify-between px-5 py-3 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-50/80"
+        className="flex min-h-11 w-full items-center justify-between px-4 py-3 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-50/80 sm:min-h-0 sm:px-5"
       >
         <span>{title}</span>
         <svg
@@ -116,7 +117,9 @@ function Collapsible({
         </svg>
       </button>
       {open && (
-        <div className="border-t border-slate-100 px-5 py-4">{children}</div>
+        <div className="border-t border-slate-100 px-4 py-3 sm:px-5 sm:py-4">
+          {children}
+        </div>
       )}
     </div>
   );
@@ -143,6 +146,7 @@ export function SessionRunner({
     { text: string; lineageId?: string }[]
   >([]);
   const [busy, setBusy] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
   const [grade, setGrade] = useState("");
   const [comment, setComment] = useState("");
   const [leaderChoice, setLeaderChoice] = useState("");
@@ -233,6 +237,7 @@ export function SessionRunner({
 
   async function advance() {
     setBusy(true);
+    setAdvancing(true);
     setError(null);
     try {
       if (!(await persistDraft())) return;
@@ -248,6 +253,7 @@ export function SessionRunner({
       }
       await load();
     } finally {
+      setAdvancing(false);
       setBusy(false);
     }
   }
@@ -364,13 +370,13 @@ export function SessionRunner({
   const currentOrder = data.session.currentStageOrder;
 
   return (
-    <div className="flex min-h-screen flex-col bg-gradient-to-b from-slate-50 via-white to-slate-50">
+    <div className="flex min-h-[100dvh] flex-col bg-gradient-to-b from-slate-50 via-white to-slate-50">
       {/* ── Compact top bar ──────────────────────────────── */}
-      <header className="sticky top-0 z-40 border-b border-slate-200/60 bg-white/80 backdrop-blur-lg">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-3">
+      <header className="safe-area-t sticky top-0 z-40 border-b border-slate-200/60 bg-white/80 backdrop-blur-lg">
+        <div className="safe-area-x mx-auto flex max-w-5xl flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <Link
             to="/sessions"
-            className="flex items-center gap-2 text-sm text-slate-500 transition hover:text-teal-700"
+            className="flex min-h-10 shrink-0 items-center gap-2 text-sm text-slate-500 transition hover:text-teal-700"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
@@ -378,21 +384,21 @@ export function SessionRunner({
             Все сессии
           </Link>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end sm:gap-3">
             {!completed && (
-              <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-medium text-teal-700">
+              <span className="rounded-full bg-teal-50 px-3 py-1.5 text-xs font-medium text-teal-700">
                 Этап {currentOrder} из {totalStages}
               </span>
             )}
             {completed && (
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600">
                 Завершена
               </span>
             )}
             {staff && (
               <a
                 href={apiUrl(`/api/sessions/${sessionId}/export`)}
-                className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
+                className="inline-flex min-h-10 items-center rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
               >
                 Экспорт
               </a>
@@ -403,7 +409,7 @@ export function SessionRunner({
 
       {/* ── Error toast ──────────────────────────────────── */}
       {error && (
-        <div className="mx-auto mt-4 w-full max-w-3xl px-6">
+        <div className="safe-area-x mx-auto mt-4 w-full max-w-3xl">
           <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
             {error}
           </p>
@@ -411,19 +417,19 @@ export function SessionRunner({
       )}
 
       {/* ── Main reading area ────────────────────────────── */}
-      <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-10">
+      <main className="safe-area-x mx-auto w-full max-w-3xl flex-1 py-6 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] sm:py-10">
         {/* Case title */}
-        <div className="mb-10 text-center">
-          <h1 className="font-display text-3xl font-bold leading-tight text-slate-900 sm:text-4xl">
+        <div className="mb-8 text-center sm:mb-10">
+          <h1 className="font-display text-2xl font-bold leading-snug text-slate-900 sm:text-3xl md:text-4xl">
             {data.session.case.title}
           </h1>
-          <p className="mt-3 text-sm text-slate-500">
+          <p className="mt-3 text-pretty text-sm leading-relaxed text-slate-500">
             {data.session.studyGroup.name} · {data.session.studyGroup.faculty.name}
           </p>
         </div>
 
         {/* ── Stage content (the star of the show) ───────── */}
-        <div className="space-y-12">
+        <div className="space-y-8 sm:space-y-12">
           {data.visibleStages.map((st) => (
             <article key={st.id}>
               <h2 className="mb-6 border-b border-slate-200/60 pb-3 text-lg font-semibold text-slate-800">
@@ -448,7 +454,7 @@ export function SessionRunner({
 
         {/* ── Draft: hypotheses + questions (active session) ── */}
         {!completed && data.draft && data.canEdit && (
-          <section className="mt-12 rounded-2xl border border-slate-200/70 bg-white/95 p-5 shadow-sm backdrop-blur-sm">
+          <section className="mt-8 rounded-2xl border border-slate-200/70 bg-white/95 p-4 shadow-sm backdrop-blur-sm sm:mt-12 sm:p-5">
             {/* Hypotheses — compact tags */}
             <div className="mb-4">
               <h3 className="text-sm font-semibold text-slate-700">Гипотезы</h3>
@@ -457,13 +463,13 @@ export function SessionRunner({
                   {hypos.map((h, i) => (
                     <span
                       key={h.lineageId ?? `hypo-${i}`}
-                      className="group inline-flex items-center gap-1 rounded-full border border-amber-200/80 bg-amber-50 px-3 py-1 text-xs text-amber-900"
+                      className="group inline-flex max-w-full items-center gap-1 rounded-full border border-amber-200/80 bg-amber-50 px-3 py-1.5 text-xs text-amber-900"
                     >
                       {editingHypoIdx === i ? (
                         <input
                           autoFocus
                           type="text"
-                          className="w-40 border-none bg-transparent p-0 text-xs text-amber-900 outline-none"
+                          className="min-w-0 flex-1 border-none bg-transparent p-0 text-xs text-amber-900 outline-none sm:w-40 sm:flex-none"
                           value={h.text}
                           onChange={(e) => {
                             const next = [...hypos];
@@ -481,7 +487,7 @@ export function SessionRunner({
                       ) : (
                         <button
                           type="button"
-                          className="max-w-[200px] truncate text-left"
+                          className="max-w-full truncate text-left sm:max-w-[200px]"
                           onClick={() => setEditingHypoIdx(i)}
                           title={h.text}
                         >
@@ -506,10 +512,10 @@ export function SessionRunner({
                   ))}
                 </div>
               )}
-              <div className="mt-2 flex items-center gap-2">
+              <div className="mt-2 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                 <input
                   type="text"
-                  className="h-8 flex-1 rounded-full border border-slate-200 bg-slate-50/80 px-3 text-sm placeholder:text-slate-400 focus:border-teal-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-teal-400"
+                  className="h-10 min-h-10 w-full flex-1 rounded-full border border-slate-200 bg-slate-50/80 px-3 text-base placeholder:text-slate-400 focus:border-teal-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-teal-400 sm:h-8 sm:min-h-0 sm:text-sm"
                   placeholder="Новая гипотеза... (Enter)"
                   value={newHypoInput}
                   onChange={(e) => setNewHypoInput(e.target.value)}
@@ -522,7 +528,7 @@ export function SessionRunner({
                 />
                 <button
                   type="button"
-                  className="h-8 shrink-0 rounded-full bg-amber-100 px-3 text-xs font-medium text-amber-900 transition hover:bg-amber-200"
+                  className="h-10 shrink-0 rounded-full bg-amber-100 px-4 text-sm font-medium text-amber-900 transition hover:bg-amber-200 sm:h-8 sm:px-3 sm:text-xs"
                   onClick={() => addHypoFromInput()}
                 >
                   +
@@ -535,10 +541,10 @@ export function SessionRunner({
               <h3 className="text-sm font-semibold text-slate-700">Вопросы</h3>
               <div className="mt-2 space-y-1.5">
                 {questions.map((q, i) => (
-                  <div key={i} className="flex items-center gap-2">
+                  <div key={i} className="flex min-w-0 items-center gap-2">
                     <input
                       type="text"
-                      className="h-8 flex-1 rounded-full border border-slate-200 bg-slate-50/80 px-3 text-sm placeholder:text-slate-400 focus:border-teal-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-teal-400"
+                      className="h-10 min-h-10 min-w-0 flex-1 rounded-full border border-slate-200 bg-slate-50/80 px-3 text-base placeholder:text-slate-400 focus:border-teal-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-teal-400 sm:h-8 sm:min-h-0 sm:text-sm"
                       placeholder="Вопрос..."
                       value={q.text}
                       onChange={(e) => {
@@ -568,21 +574,32 @@ export function SessionRunner({
               </button>
             </div>
 
-            {/* Action buttons — single row */}
-            <div className="flex items-center gap-2 border-t border-slate-100 pt-4">
+            {/* Action buttons */}
+            <div className="flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:flex-wrap sm:items-center">
               <button
                 type="button"
                 disabled={busy}
+                aria-busy={advancing}
                 onClick={() => void advance()}
-                className="rounded-full bg-teal-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-60"
+                className="order-1 flex min-h-11 w-full items-center justify-center gap-2 rounded-full bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60 aria-[busy=true]:cursor-wait aria-[busy=true]:opacity-100 sm:order-none sm:min-w-[9.5rem] sm:w-auto sm:min-h-0 sm:py-2"
               >
-                Далее
+                {advancing ? (
+                  <>
+                    <span
+                      className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-white/35 border-t-white"
+                      aria-hidden
+                    />
+                    <span>Переход…</span>
+                  </>
+                ) : (
+                  "Далее"
+                )}
               </button>
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => void saveDraft()}
-                className="rounded-full border border-slate-200 px-4 py-2 text-sm text-slate-600 transition hover:bg-slate-50 disabled:opacity-60"
+                className="order-2 min-h-11 w-full rounded-full border border-slate-200 px-4 py-2.5 text-sm text-slate-600 transition hover:bg-slate-50 disabled:opacity-60 sm:order-none sm:w-auto sm:min-h-0 sm:py-2"
               >
                 Сохранить
               </button>
@@ -590,7 +607,7 @@ export function SessionRunner({
                 type="button"
                 disabled={busy}
                 onClick={() => void forceComplete()}
-                className="ml-auto rounded-full border border-red-200/70 px-4 py-2 text-sm text-red-600 transition hover:bg-red-50 disabled:opacity-60"
+                className="order-3 min-h-11 w-full rounded-full border border-red-200/70 px-4 py-2.5 text-sm text-red-600 transition hover:bg-red-50 disabled:opacity-60 sm:order-none sm:ml-auto sm:w-auto sm:min-h-0 sm:py-2"
               >
                 Завершить
               </button>
@@ -603,11 +620,11 @@ export function SessionRunner({
           {/* Session settings (leader change) */}
           {(data.canEditSessionSettings ?? false) && (
             <Collapsible title="Параметры сессии">
-              <div className="flex flex-wrap items-end gap-3">
-                <label className="flex flex-col gap-1 text-sm">
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+                <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm sm:min-w-[220px] sm:flex-none">
                   <span className="text-slate-600">Ведущий сессии</span>
                   <select
-                    className="min-w-[220px] rounded-lg border border-slate-200 px-3 py-2"
+                    className="min-h-11 w-full rounded-lg border border-slate-200 px-3 py-2 text-base sm:min-h-0 sm:min-w-[220px] sm:text-sm"
                     value={leaderChoice}
                     onChange={(e) => setLeaderChoice(e.target.value)}
                   >
@@ -624,7 +641,7 @@ export function SessionRunner({
                     busy || leaderChoice === data.session.leader.id || !leaderChoice
                   }
                   onClick={() => void saveLeader()}
-                  className="rounded-lg bg-slate-800 px-4 py-2 text-sm text-white hover:bg-slate-900 disabled:opacity-50"
+                  className="min-h-11 w-full rounded-lg bg-slate-800 px-4 py-2.5 text-sm text-white hover:bg-slate-900 disabled:opacity-50 sm:w-auto sm:min-h-0 sm:py-2"
                 >
                   Сохранить
                 </button>
@@ -634,7 +651,7 @@ export function SessionRunner({
 
           {/* Session info */}
           <Collapsible title="Информация о сессии">
-            <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+            <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
               <dt className="text-slate-500">Ведущий</dt>
               <dd className="font-medium text-slate-800">
                 {data.session.leader.name ?? data.session.leader.login}
@@ -727,7 +744,7 @@ export function SessionRunner({
                   type="button"
                   disabled={busy}
                   onClick={() => void runAnalysis()}
-                  className="rounded-xl bg-violet-600 px-4 py-2 text-sm text-white hover:bg-violet-700 disabled:opacity-60"
+                  className="min-h-11 w-full rounded-xl bg-violet-600 px-4 py-2.5 text-sm text-white hover:bg-violet-700 disabled:opacity-60 sm:w-auto sm:min-h-0 sm:py-2"
                 >
                   Сгенерировать ИИ-анализ
                 </button>
@@ -762,18 +779,64 @@ export function SessionRunner({
                     <span className="font-semibold text-slate-700">
                       {preliminaryScores.averageScore}/100
                     </span>{" "}
-                    — ориентир; итог выставляете в поле ниже.
+                    — ориентир; итог выставляете баллом 0–100 ниже.
                   </p>
-                ) : null}
+                ) : (
+                  <p className="mb-3 text-xs text-slate-500">
+                    Итоговая оценка группы — в баллах по шкале{" "}
+                    <span className="font-semibold text-slate-700">0–100</span>{" "}
+                    (как у ИИ).
+                  </p>
+                )}
                 <div className="space-y-3">
-                  <input
-                    className="w-full max-w-xs rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                    placeholder="Оценка (текст или балл)"
-                    value={grade}
-                    onChange={(e) => setGrade(e.target.value)}
-                  />
+                  {grade.trim() !== "" && parseScore100(grade) === null ? (
+                    <>
+                      <p className="text-xs text-amber-800">
+                        Сохранена нечисловая оценка. Для формата как у ИИ укажите число
+                        от 0 до 100 или замените значение.
+                      </p>
+                      <input
+                        className="min-h-11 w-full max-w-xs rounded-lg border border-amber-200 bg-amber-50/50 px-3 py-2 text-base sm:min-h-0 sm:text-sm"
+                        placeholder="Например: 75"
+                        value={grade}
+                        onChange={(e) => setGrade(e.target.value)}
+                      />
+                    </>
+                  ) : (
+                    <label className="block max-w-xs space-y-1.5">
+                      <span className="text-xs font-medium text-slate-600">
+                        Балл (0–100)
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        inputMode="numeric"
+                        className="min-h-11 w-full rounded-lg border border-slate-200 px-3 py-2 text-base tabular-nums sm:min-h-0 sm:text-sm"
+                        placeholder="Например: 75"
+                        value={
+                          grade === ""
+                            ? ""
+                            : (parseScore100(grade) ?? "")
+                        }
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v === "") {
+                            setGrade("");
+                            return;
+                          }
+                          const n = Number(v);
+                          if (!Number.isFinite(n)) return;
+                          setGrade(
+                            String(Math.round(Math.min(100, Math.max(0, n)))),
+                          );
+                        }}
+                      />
+                    </label>
+                  )}
                   <textarea
-                    className="min-h-[80px] w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                    className="min-h-[100px] w-full rounded-lg border border-slate-200 px-3 py-2 text-base sm:text-sm"
                     placeholder="Комментарий"
                     value={comment}
                     onChange={(e) => setComment(e.target.value)}
@@ -782,7 +845,7 @@ export function SessionRunner({
                     type="button"
                     disabled={busy}
                     onClick={() => void saveOutcome()}
-                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-60"
+                    className="min-h-11 w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm text-white hover:bg-slate-800 disabled:opacity-60 sm:w-auto sm:min-h-0 sm:py-2"
                   >
                     Сохранить оценку и зафиксировать
                   </button>

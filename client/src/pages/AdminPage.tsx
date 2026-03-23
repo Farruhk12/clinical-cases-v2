@@ -26,6 +26,12 @@ const cards = [
     desc: "Кафедры, факультеты, уровни курсов",
     color: "bg-amber-100 text-amber-600",
   },
+  {
+    to: "/analytics",
+    title: "Аналитика",
+    desc: "Сводка по кафедрам, группам и кейсам",
+    color: "bg-violet-100 text-violet-600",
+  },
 ];
 
 export function AdminPage() {

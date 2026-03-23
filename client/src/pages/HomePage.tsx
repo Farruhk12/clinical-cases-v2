@@ -26,7 +26,7 @@ export function HomePage() {
             <IconStethoscope className="h-4 w-4" />
             Клиническое образование
           </p>
-          <h1 className="font-display text-4xl font-semibold leading-tight tracking-tight text-slate-900 sm:text-5xl">
+          <h1 className="font-display text-[1.75rem] font-semibold leading-tight tracking-tight text-slate-900 sm:text-4xl md:text-5xl">
             Платформа{" "}
             <span className="text-gradient-brand">клинических кейсов</span>
           </h1>

@@ -33,6 +33,8 @@ import {
   unwrapAnalysisMarkdownIfJsonWrapped,
 } from "../src/lib/session-ai-scores";
 import { routeParam } from "./param";
+import { serializeSessionBriefForJson } from "../src/lib/session-brief-json";
+import { toJsonIsoUtc } from "../src/lib/to-json-iso-utc";
 
 const SESSION_ANALYZE_VERSION = "session-analysis-v4";
 
@@ -116,7 +118,7 @@ export function registerSessionRoutes(app: Express) {
       departmentId: session.user.departmentId,
       caseId,
     });
-    res.json({ sessions });
+    res.json({ sessions: sessions.map(serializeSessionBriefForJson) });
   });
 
   app.post("/api/sessions", async (req: Request, res: Response) => {
@@ -260,7 +262,14 @@ export function registerSessionRoutes(app: Express) {
         "caseVersionSnapshot", "startedAt", "completedAt"
       FROM "CaseSession" WHERE id = ${sessionId}
     `;
-    res.json({ session: sessOut[0] });
+    const created = sessOut[0];
+    res.json({
+      session: {
+        ...created,
+        startedAt: toJsonIsoUtc(created.startedAt),
+        completedAt: toJsonIsoUtc(created.completedAt),
+      },
+    });
   });
 
   app.get("/api/sessions/:sessionId", async (req: Request, res: Response) => {
@@ -336,8 +345,8 @@ export function registerSessionRoutes(app: Express) {
         id: cs.id,
         status: cs.status,
         currentStageOrder: cs.currentStageOrder,
-        startedAt: cs.startedAt,
-        completedAt: cs.completedAt,
+        startedAt: toJsonIsoUtc(cs.startedAt),
+        completedAt: toJsonIsoUtc(cs.completedAt),
         caseVersionSnapshot: cs.caseVersionSnapshot,
         case: stripCase(cs.case),
         studyGroup: {
@@ -347,7 +356,12 @@ export function registerSessionRoutes(app: Express) {
           courseLevel: cs.studyGroup.courseLevel,
         },
         leader: cs.leader,
-        outcome: outcomeWithScores,
+        outcome: outcomeWithScores
+          ? {
+              ...outcomeWithScores,
+              finalizedAt: toJsonIsoUtc(outcomeWithScores.finalizedAt),
+            }
+          : null,
       },
       groupMembers,
       canEditSessionSettings,
@@ -365,16 +379,16 @@ export function registerSessionRoutes(app: Express) {
       timeline: timelineSubmissions.map((sub) => ({
         stageOrder: sub.stage.order,
         stageTitle: sub.stage.title,
-        submittedAt: sub.submittedAt,
-        openedAt: sub.openedAt,
+        submittedAt: toJsonIsoUtc(sub.submittedAt),
+        openedAt: toJsonIsoUtc(sub.openedAt),
         hypotheses: sub.hypotheses,
         questions: sub.questions,
       })),
       canEdit,
       analytics: timelineSubmissions.map((sub) => ({
         stageOrder: sub.stage.order,
-        openedAt: sub.openedAt,
-        submittedAt: sub.submittedAt,
+        openedAt: toJsonIsoUtc(sub.openedAt),
+        submittedAt: toJsonIsoUtc(sub.submittedAt),
       })),
     });
   });
@@ -631,16 +645,28 @@ export function registerSessionRoutes(app: Express) {
           VALUES (${randomUUID()}, ${csRow.id}, ${teacherGrade}, ${teacherComment}, ${finalizedAt})
         `;
       }
-      const [outcome] = await pool<
+      const [outcomeRow] = await pool<
         {
           id: string;
           caseSessionId: string;
+          aiAnalysis: string | null;
+          aiModel: string | null;
+          aiPromptVersion: string | null;
+          aiPreliminaryScores: unknown;
           teacherGrade: string | null;
           teacherComment: string | null;
           finalizedAt: Date | null;
         }[]
       >`SELECT * FROM "SessionOutcome" WHERE "caseSessionId" = ${csRow.id}`;
-      res.json({ outcome });
+      if (!outcomeRow) {
+        return errorResponse(res, "Не удалось прочитать итог сессии", 500);
+      }
+      res.json({
+        outcome: {
+          ...outcomeRow,
+          finalizedAt: toJsonIsoUtc(outcomeRow.finalizedAt),
+        },
+      });
     },
   );
 
@@ -814,7 +840,12 @@ stageScores.length должно быть ${stageCount} (по числу этап
           finalizedAt: Date | null;
         }[]
       >`SELECT * FROM "SessionOutcome" WHERE "caseSessionId" = ${cs.id}`;
-      res.json({ outcome: outcomeRows[0] });
+      const row = outcomeRows[0];
+      res.json({
+        outcome: row
+          ? { ...row, finalizedAt: toJsonIsoUtc(row.finalizedAt) }
+          : null,
+      });
     },
   );
 }

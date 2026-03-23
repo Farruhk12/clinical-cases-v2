@@ -30,7 +30,7 @@ async function geminiGenerate(
   }
 
   const model = geminiModelName();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
   const systemParts = messages
     .filter((m) => m.role === "system")
@@ -50,7 +50,10 @@ async function geminiGenerate(
 
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": key,
+    },
     body: JSON.stringify({
       ...(systemInstruction ? { systemInstruction } : {}),
       contents,
