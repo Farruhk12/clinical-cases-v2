@@ -64,7 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return {
             ok: false as const,
             error:
-              "Ответ не от API (ожидался JSON). На Vercel задайте VITE_API_BASE_URL на URL сервера с Express и CORS_ORIGIN на URL фронта — см. .env.example.",
+              "Ответ не от API (ожидался JSON). Проверьте деплой и переменные DATABASE_URL / AUTH_SECRET на Vercel.",
           };
         }
         if (!res.ok) {
@@ -93,7 +93,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return {
           ok: false as const,
           error:
-            "Нет ответа от API. Локально: проверьте npm run dev и порт API. На Vercel: задайте VITE_API_BASE_URL на хост с Express.",
+            "Нет ответа от API. Локально: npm run dev. На Vercel: в Project Settings задайте DATABASE_URL и AUTH_SECRET.",
         };
       }
     },
