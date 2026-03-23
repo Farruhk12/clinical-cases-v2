@@ -1,5 +1,6 @@
 /**
  * Собирает api/_entry.ts + server/ + src/ в один api/index.js для Vercel.
+ * Файл не должен быть в .gitignore: Vercel не кладёт в деплой игнорируемые пути.
  */
 import { build } from "esbuild";
 
