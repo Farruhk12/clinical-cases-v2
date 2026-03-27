@@ -126,42 +126,67 @@ export async function loadCaseSessionDetail(
     WHERE "caseSessionId" = ${sessionId}
   `;
 
-  const submissions = await Promise.all(
-    subRows.map(async (sub) => {
-      const [stage] = await pool<
-        {
-          id: string;
-          caseId: string;
-          order: number;
-          title: string;
-          isFinalReveal: boolean;
-          learningGoals: string | null;
-        }[]
-      >`
+  let submissions: {
+    id: string;
+    caseSessionId: string;
+    caseStageId: string;
+    submittedAt: Date | null;
+    openedAt: Date | null;
+    stage: { id: string; caseId: string; order: number; title: string; isFinalReveal: boolean; learningGoals: string | null };
+    hypotheses: { id: string; text: string; lineageId: string; sort: number }[];
+    questions: { id: string; text: string; lineageId: string; sort: number }[];
+  }[] = [];
+
+  type SubStageRow = { id: string; caseId: string; order: number; title: string; isFinalReveal: boolean; learningGoals: string | null };
+  type SubItemRow = { id: string; stageSubmissionId: string; text: string; lineageId: string; sort: number };
+
+  if (subRows.length > 0) {
+    const subIds = subRows.map((s) => s.id);
+    const stageIds = subRows.map((s) => s.caseStageId);
+
+    const [stageRows, hypRows, qRows] = await Promise.all([
+      pool<SubStageRow[]>`
         SELECT id, "caseId", "order", title, "isFinalReveal", "learningGoals"
-        FROM "CaseStage" WHERE id = ${sub.caseStageId}
-      `;
+        FROM "CaseStage"
+        WHERE id = ANY(${pool.array(stageIds)})
+      `,
+      pool<SubItemRow[]>`
+        SELECT id, "stageSubmissionId", text, "lineageId", sort FROM "Hypothesis"
+        WHERE "stageSubmissionId" = ANY(${pool.array(subIds)})
+        ORDER BY sort ASC
+      `,
+      pool<SubItemRow[]>`
+        SELECT id, "stageSubmissionId", text, "lineageId", sort FROM "StudentQuestion"
+        WHERE "stageSubmissionId" = ANY(${pool.array(subIds)})
+        ORDER BY sort ASC
+      `,
+    ]);
+
+    const stageById = new Map<string, SubStageRow>(stageRows.map((s) => [s.id, s]));
+    const hypBySubId = new Map<string, SubItemRow[]>();
+    for (const h of hypRows) {
+      const arr = hypBySubId.get(h.stageSubmissionId) ?? [];
+      arr.push(h);
+      hypBySubId.set(h.stageSubmissionId, arr);
+    }
+    const qBySubId = new Map<string, SubItemRow[]>();
+    for (const q of qRows) {
+      const arr = qBySubId.get(q.stageSubmissionId) ?? [];
+      arr.push(q);
+      qBySubId.set(q.stageSubmissionId, arr);
+    }
+
+    submissions = subRows.map((sub) => {
+      const stage = stageById.get(sub.caseStageId);
       if (!stage) throw new Error("STAGE_MISSING");
-      const hypotheses = await pool<
-        { id: string; text: string; lineageId: string; sort: number }[]
-      >`
-        SELECT id, text, "lineageId", sort FROM "Hypothesis"
-        WHERE "stageSubmissionId" = ${sub.id} ORDER BY sort ASC
-      `;
-      const questions = await pool<
-        { id: string; text: string; lineageId: string; sort: number }[]
-      >`
-        SELECT id, text, "lineageId", sort FROM "StudentQuestion"
-        WHERE "stageSubmissionId" = ${sub.id} ORDER BY sort ASC
-      `;
       return {
         ...sub,
         stage,
-        hypotheses,
-        questions,
+        hypotheses: (hypBySubId.get(sub.id) ?? []).map(({ stageSubmissionId: _s, ...rest }) => rest),
+        questions: (qBySubId.get(sub.id) ?? []).map(({ stageSubmissionId: _s, ...rest }) => rest),
       };
-    }),
-  );
+    });
+  }
 
   const [outcome] = await pool<SessionOutcomeRow[]>`
     SELECT id, "caseSessionId", "aiAnalysis", "aiModel", "aiPromptVersion",

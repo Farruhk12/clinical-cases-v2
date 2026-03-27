@@ -70,28 +70,35 @@ export async function loadCaseDetail(caseId: string): Promise<CaseDetail | null>
     ORDER BY "order" ASC
   `;
 
-  const stagesWithBlocks = await Promise.all(
-    stages.map(async (st) => {
-      const blocks = await sql<
-        {
-          id: string;
-          caseStageId: string;
-          order: number;
-          blockType: BlockType;
-          rawText: string | null;
-          formattedContent: string | null;
-          imageUrl: string | null;
-          imageAlt: string | null;
-        }[]
-      >`
+  type BlockRow = {
+    id: string;
+    caseStageId: string;
+    order: number;
+    blockType: BlockType;
+    rawText: string | null;
+    formattedContent: string | null;
+    imageUrl: string | null;
+    imageAlt: string | null;
+  };
+  const stageIds = stages.map((s) => s.id);
+  const allBlocks: BlockRow[] = stageIds.length
+    ? await sql<BlockRow[]>`
         SELECT id, "caseStageId", "order", "blockType", "rawText", "formattedContent", "imageUrl", "imageAlt"
         FROM "StageBlock"
-        WHERE "caseStageId" = ${st.id}
+        WHERE "caseStageId" = ANY(${sql.array(stageIds)})
         ORDER BY "order" ASC
-      `;
-      return { ...st, blocks };
-    }),
-  );
+      `
+    : [];
+  const blocksByStage = new Map<string, BlockRow[]>();
+  for (const b of allBlocks) {
+    const arr = blocksByStage.get(b.caseStageId) ?? [];
+    arr.push(b);
+    blocksByStage.set(b.caseStageId, arr);
+  }
+  const stagesWithBlocks = stages.map((st) => ({
+    ...st,
+    blocks: blocksByStage.get(st.id) ?? [],
+  }));
 
   return {
     ...c,

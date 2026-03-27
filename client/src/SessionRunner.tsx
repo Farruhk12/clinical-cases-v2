@@ -153,6 +153,40 @@ export function SessionRunner({
   const lastLeaderId = useRef<string | null>(null);
   const analysisResultsRef = useRef<HTMLDivElement | null>(null);
 
+  const applyPayload = useCallback(
+    (j: SessionPayload) => {
+      setData(j);
+      if (j.draft) {
+        const hs = j.draft.hypotheses.map((h) => ({
+          text: h.text,
+          lineageId: h.lineageId,
+        }));
+        const qs = j.draft.questions.map((q) => ({
+          text: q.text,
+          lineageId: q.lineageId,
+        }));
+        if (j.canEdit) {
+          setHypos(hs);
+          setQuestions(qs.length > 0 ? qs : [{ text: "" }]);
+          setNewHypoInput("");
+          setEditingHypoIdx(null);
+        } else {
+          setHypos(hs);
+          setQuestions(qs);
+        }
+      }
+      if (j.session.outcome) {
+        setGrade(j.session.outcome.teacherGrade ?? "");
+        setComment(j.session.outcome.teacherComment ?? "");
+      }
+      if (j.session.leader.id !== lastLeaderId.current) {
+        lastLeaderId.current = j.session.leader.id;
+        setLeaderChoice(j.session.leader.id);
+      }
+    },
+    [],
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     const res = await apiFetch(`/api/sessions/${sessionId}`);
@@ -162,36 +196,9 @@ export function SessionRunner({
       return;
     }
     const j = (await res.json()) as SessionPayload;
-    setData(j);
-    if (j.draft) {
-      const hs = j.draft.hypotheses.map((h) => ({
-        text: h.text,
-        lineageId: h.lineageId,
-      }));
-      const qs = j.draft.questions.map((q) => ({
-        text: q.text,
-        lineageId: q.lineageId,
-      }));
-      if (j.canEdit) {
-        setHypos(hs);
-        setQuestions(qs.length > 0 ? qs : [{ text: "" }]);
-        setNewHypoInput("");
-        setEditingHypoIdx(null);
-      } else {
-        setHypos(hs);
-        setQuestions(qs);
-      }
-    }
-    if (j.session.outcome) {
-      setGrade(j.session.outcome.teacherGrade ?? "");
-      setComment(j.session.outcome.teacherComment ?? "");
-    }
-    if (j.session.leader.id !== lastLeaderId.current) {
-      lastLeaderId.current = j.session.leader.id;
-      setLeaderChoice(j.session.leader.id);
-    }
+    applyPayload(j);
     setLoading(false);
-  }, [sessionId]);
+  }, [sessionId, applyPayload]);
 
   useEffect(() => {
     void load();
@@ -240,18 +247,23 @@ export function SessionRunner({
     setAdvancing(true);
     setError(null);
     try {
-      if (!(await persistDraft())) return;
+      // Черновик + переход + загрузка следующего шага — один запрос
       const res = await apiFetch(`/api/sessions/${sessionId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "advance" }),
+        body: JSON.stringify({
+          action: "advance",
+          hypotheses: hypos.filter((h) => h.text.trim()),
+          questions: questions.filter((q) => q.text.trim()),
+        }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         setError(j.error ?? "Не удалось перейти далее");
         return;
       }
-      await load();
+      const j = (await res.json()) as SessionPayload;
+      applyPayload(j);
     } finally {
       setAdvancing(false);
       setBusy(false);

@@ -52928,17 +52928,23 @@ async function loadCaseDetail(caseId) {
     WHERE "caseId" = ${caseId}
     ORDER BY "order" ASC
   `;
-  const stagesWithBlocks = await Promise.all(
-    stages.map(async (st) => {
-      const blocks = await sql`
+  const stageIds = stages.map((s) => s.id);
+  const allBlocks = stageIds.length ? await sql`
         SELECT id, "caseStageId", "order", "blockType", "rawText", "formattedContent", "imageUrl", "imageAlt"
         FROM "StageBlock"
-        WHERE "caseStageId" = ${st.id}
+        WHERE "caseStageId" = ANY(${sql.array(stageIds)})
         ORDER BY "order" ASC
-      `;
-      return { ...st, blocks };
-    })
-  );
+      ` : [];
+  const blocksByStage = /* @__PURE__ */ new Map();
+  for (const b2 of allBlocks) {
+    const arr = blocksByStage.get(b2.caseStageId) ?? [];
+    arr.push(b2);
+    blocksByStage.set(b2.caseStageId, arr);
+  }
+  const stagesWithBlocks = stages.map((st) => ({
+    ...st,
+    blocks: blocksByStage.get(st.id) ?? []
+  }));
   return {
     ...c,
     department,
@@ -60109,29 +60115,51 @@ async function loadCaseSessionDetail(sessionId) {
     FROM "StageSubmission"
     WHERE "caseSessionId" = ${sessionId}
   `;
-  const submissions = await Promise.all(
-    subRows.map(async (sub) => {
-      const [stage] = await pool`
+  let submissions = [];
+  if (subRows.length > 0) {
+    const subIds = subRows.map((s) => s.id);
+    const stageIds = subRows.map((s) => s.caseStageId);
+    const [stageRows, hypRows, qRows] = await Promise.all([
+      pool`
         SELECT id, "caseId", "order", title, "isFinalReveal", "learningGoals"
-        FROM "CaseStage" WHERE id = ${sub.caseStageId}
-      `;
+        FROM "CaseStage"
+        WHERE id = ANY(${pool.array(stageIds)})
+      `,
+      pool`
+        SELECT id, "stageSubmissionId", text, "lineageId", sort FROM "Hypothesis"
+        WHERE "stageSubmissionId" = ANY(${pool.array(subIds)})
+        ORDER BY sort ASC
+      `,
+      pool`
+        SELECT id, "stageSubmissionId", text, "lineageId", sort FROM "StudentQuestion"
+        WHERE "stageSubmissionId" = ANY(${pool.array(subIds)})
+        ORDER BY sort ASC
+      `
+    ]);
+    const stageById = new Map(stageRows.map((s) => [s.id, s]));
+    const hypBySubId = /* @__PURE__ */ new Map();
+    for (const h of hypRows) {
+      const arr = hypBySubId.get(h.stageSubmissionId) ?? [];
+      arr.push(h);
+      hypBySubId.set(h.stageSubmissionId, arr);
+    }
+    const qBySubId = /* @__PURE__ */ new Map();
+    for (const q of qRows) {
+      const arr = qBySubId.get(q.stageSubmissionId) ?? [];
+      arr.push(q);
+      qBySubId.set(q.stageSubmissionId, arr);
+    }
+    submissions = subRows.map((sub) => {
+      const stage = stageById.get(sub.caseStageId);
       if (!stage) throw new Error("STAGE_MISSING");
-      const hypotheses = await pool`
-        SELECT id, text, "lineageId", sort FROM "Hypothesis"
-        WHERE "stageSubmissionId" = ${sub.id} ORDER BY sort ASC
-      `;
-      const questions = await pool`
-        SELECT id, text, "lineageId", sort FROM "StudentQuestion"
-        WHERE "stageSubmissionId" = ${sub.id} ORDER BY sort ASC
-      `;
       return {
         ...sub,
         stage,
-        hypotheses,
-        questions
+        hypotheses: (hypBySubId.get(sub.id) ?? []).map(({ stageSubmissionId: _s, ...rest }) => rest),
+        questions: (qBySubId.get(sub.id) ?? []).map(({ stageSubmissionId: _s, ...rest }) => rest)
       };
-    })
-  );
+    });
+  }
   const [outcome] = await pool`
     SELECT id, "caseSessionId", "aiAnalysis", "aiModel", "aiPromptVersion",
       "aiPreliminaryScores", "teacherGrade", "teacherComment", "finalizedAt"
@@ -60453,7 +60481,7 @@ async function geminiGenerate(messages2, jsonMode) {
     return { ok: false, missingKey: true, text: "" };
   }
   const model = geminiModelName();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key2)}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const systemParts = messages2.filter((m) => m.role === "system").map((m) => m.content.trim()).filter(Boolean);
   const systemInstruction = systemParts.length > 0 ? { parts: [{ text: systemParts.join("\n\n") }] } : void 0;
   const contents = [];
@@ -60464,7 +60492,10 @@ async function geminiGenerate(messages2, jsonMode) {
   }
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": key2
+    },
     body: JSON.stringify({
       ...systemInstruction ? { systemInstruction } : {},
       contents,
@@ -60762,7 +60793,11 @@ var patchSchema = external_exports.discriminatedUnion("action", [
       external_exports.object({ text: external_exports.string(), lineageId: external_exports.string().optional() })
     )
   }),
-  external_exports.object({ action: external_exports.literal("advance") }),
+  external_exports.object({
+    action: external_exports.literal("advance"),
+    hypotheses: external_exports.array(external_exports.object({ text: external_exports.string(), lineageId: external_exports.string().optional() })).optional(),
+    questions: external_exports.array(external_exports.object({ text: external_exports.string(), lineageId: external_exports.string().optional() })).optional()
+  }),
   external_exports.object({ action: external_exports.literal("forceComplete") }),
   external_exports.object({
     action: external_exports.literal("setLeader"),
@@ -60792,6 +60827,95 @@ var outcomePatchSchema = external_exports.object({
   teacherComment: external_exports.string().optional(),
   finalize: external_exports.boolean().optional()
 });
+async function buildSessionPayload(cs, session) {
+  if (!cs) return null;
+  const pool = getSql();
+  const canEdit = canDriveSession(cs, session);
+  const canEditSessionSettings = cs.status === "IN_PROGRESS" && (session.user.role === "ADMIN" || session.user.role === "TEACHER" && canManageCase(session, cs.case.departmentId) || cs.leaderUserId === session.user.id);
+  const groupMembers = cs.studyGroup.members.map((m) => ({
+    id: m.user.id,
+    name: m.user.name,
+    login: m.user.login
+  }));
+  const currentStage = cs.case.stages.find(
+    (s) => s.order === cs.currentStageOrder
+  );
+  const currentSubmission = currentStage && cs.submissions.find(
+    (sub) => sub.caseStageId === currentStage.id && !sub.submittedAt
+  );
+  if (currentSubmission && !currentSubmission.openedAt) {
+    await pool`
+      UPDATE "StageSubmission" SET "openedAt" = ${/* @__PURE__ */ new Date()} WHERE id = ${currentSubmission.id}
+    `;
+    currentSubmission.openedAt = /* @__PURE__ */ new Date();
+  }
+  const showTeacherKey = session.user.role === "ADMIN" || session.user.role === "TEACHER";
+  const stripCase = (c) => {
+    if (showTeacherKey) return c;
+    const { teacherKey, ...rest } = c;
+    void teacherKey;
+    return rest;
+  };
+  const completed = cs.status === "COMPLETED";
+  const stagesForContent = completed ? cs.case.stages : currentStage ? [currentStage] : [];
+  const visibleStages = stagesForContent.map((st) => ({
+    ...st,
+    blocks: st.blocks.map((b2) => ({
+      ...b2,
+      rawText: b2.rawText,
+      formattedContent: b2.formattedContent
+    }))
+  }));
+  const timelineSubmissions = [...cs.submissions].filter(
+    (s) => s.submittedAt || !completed && s.id === currentSubmission?.id
+  ).sort((a, b2) => a.stage.order - b2.stage.order);
+  const outcomeWithScores = await mergeAiPreliminaryScoresFromDb(cs.outcome);
+  return {
+    session: {
+      id: cs.id,
+      status: cs.status,
+      currentStageOrder: cs.currentStageOrder,
+      startedAt: toJsonIsoUtc(cs.startedAt),
+      completedAt: toJsonIsoUtc(cs.completedAt),
+      caseVersionSnapshot: cs.caseVersionSnapshot,
+      case: stripCase(cs.case),
+      studyGroup: {
+        id: cs.studyGroup.id,
+        name: cs.studyGroup.name,
+        faculty: cs.studyGroup.faculty,
+        courseLevel: cs.studyGroup.courseLevel
+      },
+      leader: cs.leader,
+      outcome: outcomeWithScores ? {
+        ...outcomeWithScores,
+        finalizedAt: toJsonIsoUtc(outcomeWithScores.finalizedAt)
+      } : null
+    },
+    groupMembers,
+    canEditSessionSettings,
+    currentStage: currentStage ? { ...currentStage, blocks: currentStage.blocks } : null,
+    visibleStages,
+    draft: currentSubmission ? {
+      submissionId: currentSubmission.id,
+      hypotheses: currentSubmission.hypotheses,
+      questions: currentSubmission.questions
+    } : null,
+    timeline: timelineSubmissions.map((sub) => ({
+      stageOrder: sub.stage.order,
+      stageTitle: sub.stage.title,
+      submittedAt: toJsonIsoUtc(sub.submittedAt),
+      openedAt: toJsonIsoUtc(sub.openedAt),
+      hypotheses: sub.hypotheses,
+      questions: sub.questions
+    })),
+    canEdit,
+    analytics: timelineSubmissions.map((sub) => ({
+      stageOrder: sub.stage.order,
+      openedAt: toJsonIsoUtc(sub.openedAt),
+      submittedAt: toJsonIsoUtc(sub.submittedAt)
+    }))
+  };
+}
 function registerSessionRoutes(app2) {
   app2.get("/api/sessions", async (req, res) => {
     const a = await requireUser(req);
@@ -60950,92 +61074,8 @@ function registerSessionRoutes(app2) {
         return errorResponse(res, "\u041D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u0430", 403);
       }
     }
-    const canEdit = canDriveSession(cs, session);
-    const canEditSessionSettings = cs.status === "IN_PROGRESS" && (session.user.role === "ADMIN" || session.user.role === "TEACHER" && canManageCase(session, cs.case.departmentId) || cs.leaderUserId === session.user.id);
-    const groupMembers = cs.studyGroup.members.map((m) => ({
-      id: m.user.id,
-      name: m.user.name,
-      login: m.user.login
-    }));
-    const currentStage = cs.case.stages.find(
-      (s) => s.order === cs.currentStageOrder
-    );
-    const currentSubmission = currentStage && cs.submissions.find(
-      (sub) => sub.caseStageId === currentStage.id && !sub.submittedAt
-    );
-    const pool = getSql();
-    if (currentSubmission && !currentSubmission.openedAt) {
-      await pool`
-        UPDATE "StageSubmission" SET "openedAt" = ${/* @__PURE__ */ new Date()} WHERE id = ${currentSubmission.id}
-      `;
-      currentSubmission.openedAt = /* @__PURE__ */ new Date();
-    }
-    const showTeacherKey = session.user.role === "ADMIN" || session.user.role === "TEACHER";
-    const stripCase = (c) => {
-      if (showTeacherKey) return c;
-      const { teacherKey, ...rest } = c;
-      void teacherKey;
-      return rest;
-    };
-    const completed = cs.status === "COMPLETED";
-    const stagesForContent = completed ? cs.case.stages : currentStage ? [currentStage] : [];
-    const visibleStages = stagesForContent.map((st) => ({
-      ...st,
-      blocks: st.blocks.map((b2) => ({
-        ...b2,
-        rawText: b2.rawText,
-        formattedContent: b2.formattedContent
-      }))
-    }));
-    const timelineSubmissions = [...cs.submissions].filter(
-      (s) => s.submittedAt || !completed && s.id === currentSubmission?.id
-    ).sort((a2, b2) => a2.stage.order - b2.stage.order);
-    const outcomeWithScores = await mergeAiPreliminaryScoresFromDb(cs.outcome);
-    res.json({
-      session: {
-        id: cs.id,
-        status: cs.status,
-        currentStageOrder: cs.currentStageOrder,
-        startedAt: toJsonIsoUtc(cs.startedAt),
-        completedAt: toJsonIsoUtc(cs.completedAt),
-        caseVersionSnapshot: cs.caseVersionSnapshot,
-        case: stripCase(cs.case),
-        studyGroup: {
-          id: cs.studyGroup.id,
-          name: cs.studyGroup.name,
-          faculty: cs.studyGroup.faculty,
-          courseLevel: cs.studyGroup.courseLevel
-        },
-        leader: cs.leader,
-        outcome: outcomeWithScores ? {
-          ...outcomeWithScores,
-          finalizedAt: toJsonIsoUtc(outcomeWithScores.finalizedAt)
-        } : null
-      },
-      groupMembers,
-      canEditSessionSettings,
-      currentStage: currentStage ? { ...currentStage, blocks: currentStage.blocks } : null,
-      visibleStages,
-      draft: currentSubmission ? {
-        submissionId: currentSubmission.id,
-        hypotheses: currentSubmission.hypotheses,
-        questions: currentSubmission.questions
-      } : null,
-      timeline: timelineSubmissions.map((sub) => ({
-        stageOrder: sub.stage.order,
-        stageTitle: sub.stage.title,
-        submittedAt: toJsonIsoUtc(sub.submittedAt),
-        openedAt: toJsonIsoUtc(sub.openedAt),
-        hypotheses: sub.hypotheses,
-        questions: sub.questions
-      })),
-      canEdit,
-      analytics: timelineSubmissions.map((sub) => ({
-        stageOrder: sub.stage.order,
-        openedAt: toJsonIsoUtc(sub.openedAt),
-        submittedAt: toJsonIsoUtc(sub.submittedAt)
-      }))
-    });
+    const payload = await buildSessionPayload(cs, session);
+    res.json(payload);
   });
   app2.patch("/api/sessions/:sessionId", async (req, res) => {
     const a = await requireUser(req);
@@ -61117,8 +61157,17 @@ function registerSessionRoutes(app2) {
     }
     if (body.action === "advance") {
       try {
-        const result = await advanceSession(sessionId);
-        return res.json(result);
+        if (body.hypotheses !== void 0 || body.questions !== void 0) {
+          await updateSessionDraft(sessionId, {
+            hypotheses: body.hypotheses ?? [],
+            questions: body.questions ?? []
+          });
+        }
+        await advanceSession(sessionId);
+        const cs2 = await loadCaseSessionDetail(sessionId);
+        if (!cs2) return errorResponse(res, "\u0421\u0435\u0441\u0441\u0438\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
+        const payload = await buildSessionPayload(cs2, session);
+        return res.json({ ...payload, _advanced: true });
       } catch (e) {
         const code = e instanceof Error ? e.message : "UNKNOWN";
         mapSessionError(code, res);
