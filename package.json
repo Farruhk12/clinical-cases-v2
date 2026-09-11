@@ -8,6 +8,7 @@
     "build": "vite build && node scripts/build-api.mjs",
     "start": "tsx server/index.ts",
     "lint": "eslint api client/src server src --max-warnings 0",
+    "db:setup": "node scripts/setup-db.mjs",
     "db:seed": "tsx scripts/seed.ts"
   },
   "dependencies": {

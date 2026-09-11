@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { ReferencesAdmin } from "@/ReferencesAdmin";
 import { useAuth } from "@/auth-context";
 import { apiFetch } from "@/lib/api-fetch";
+import { PageLoader } from "@/components/PageLoader";
 
 type RefBundle = {
   departments: { id: string; name: string }[];
@@ -42,21 +43,17 @@ export function AdminReferencesPage() {
 
   if (error) {
     return (
-      <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-        {error}
-      </p>
+      <p className="ui-alert-danger">{error}</p>
     );
   }
 
   if (!ref) {
-    return <p className="text-slate-500">Загрузка...</p>;
+    return <PageLoader />;
   }
 
   return (
     <div className="space-y-8">
-      <h1 className="font-display text-3xl font-bold tracking-tight text-slate-900">
-        Справочники
-      </h1>
+      <h1 className="ui-title">Справочники</h1>
       <ReferencesAdmin
         departments={ref.departments}
         faculties={ref.faculties}

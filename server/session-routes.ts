@@ -11,7 +11,10 @@ import {
 } from "../src/lib/api-auth";
 import { isStaff, canManageCase } from "../src/lib/authz";
 import { loadCaseDetail } from "../src/lib/case-detail";
-import { fetchSessionsList } from "../src/lib/session-list";
+import {
+  fetchSessionsList,
+  sweepDuplicateOpenSessions,
+} from "../src/lib/session-list";
 import {
   loadCaseSessionDetail,
   loadCaseSessionForPatch,
@@ -23,20 +26,19 @@ import {
   updateSessionDraft,
 } from "../src/lib/session-logic";
 import type { AppSession } from "../src/types/session";
-import { chatCompletion } from "../src/lib/llm";
 import {
-  enforceStrictStageScores,
-  normalizeScores,
-  parseAiAnalysisResponse,
   parsePreliminaryScoresLoose,
-  recoverAiAnalysisFromLooseJson,
-  unwrapAnalysisMarkdownIfJsonWrapped,
+  runSessionAnalysis,
+  SESSION_ANALYZE_VERSION,
 } from "../src/lib/session-ai-scores";
 import { routeParam } from "./param";
 import { serializeSessionBriefForJson } from "../src/lib/session-brief-json";
 import { toJsonIsoUtc } from "../src/lib/to-json-iso-utc";
-
-const SESSION_ANALYZE_VERSION = "session-analysis-v4";
+import { ensureSessionJoinToken, newJoinToken } from "../src/lib/join-token";
+import {
+  loadGuestIdeasForSession,
+  serializeGuestIdea,
+} from "../src/lib/session-guest-ideas";
 
 function canDriveSession(
   cs: { status: string; leaderUserId: string; case: { departmentId: string } },
@@ -88,6 +90,7 @@ const createSessionBodySchema = z
     studyGroupName: z.string().optional(),
     facultyId: z.string().optional(),
     courseLevelId: z.string().optional(),
+    forceNew: z.boolean().optional(),
   })
   .superRefine((b, ctx) => {
     const legacy = Boolean(b.studyGroupId?.trim());
@@ -118,7 +121,6 @@ async function buildSessionPayload(
   session: AppSession,
 ) {
   if (!cs) return null;
-  const pool = getSql();
   const canEdit = canDriveSession(cs, session);
   const canEditSessionSettings =
     cs.status === "IN_PROGRESS" &&
@@ -126,7 +128,8 @@ async function buildSessionPayload(
       (session.user.role === "TEACHER" &&
         canManageCase(session, cs.case.departmentId)) ||
       cs.leaderUserId === session.user.id);
-  const groupMembers = cs.studyGroup.members.map((m) => ({
+  // Не состав учебной группы — список преподавателей/админов кафедры, доступных как ведущий.
+  const leaderCandidates = cs.studyGroup.members.map((m) => ({
     id: m.user.id,
     name: m.user.name,
     login: m.user.login,
@@ -139,19 +142,12 @@ async function buildSessionPayload(
     cs.submissions.find(
       (sub) => sub.caseStageId === currentStage.id && !sub.submittedAt,
     );
-  if (currentSubmission && !currentSubmission.openedAt) {
-    await pool`
-      UPDATE "StageSubmission" SET "openedAt" = ${new Date()} WHERE id = ${currentSubmission.id}
-    `;
-    currentSubmission.openedAt = new Date();
-  }
   const showTeacherKey =
     session.user.role === "ADMIN" || session.user.role === "TEACHER";
-  const stripCase = (c: (typeof cs)["case"]) => {
-    if (showTeacherKey) return c;
-    const { teacherKey, ...rest } = c;
-    void teacherKey;
-    return rest;
+  const caseSummary = {
+    id: cs.case.id,
+    title: cs.case.title,
+    ...(showTeacherKey ? { teacherKey: cs.case.teacherKey } : {}),
   };
   const completed = cs.status === "COMPLETED";
   const stagesForContent = completed
@@ -173,15 +169,22 @@ async function buildSessionPayload(
     )
     .sort((a, b) => a.stage.order - b.stage.order);
   const outcomeWithScores = await mergeAiPreliminaryScoresFromDb(cs.outcome);
+  const joinToken = cs.joinToken ?? (await ensureSessionJoinToken(cs.id));
+  const guestIdeas = await loadGuestIdeasForSession(cs.id);
+  const stageById = new Map(
+    cs.case.stages.map((s) => [s.id, { order: s.order, title: s.title }]),
+  );
   return {
     session: {
       id: cs.id,
       status: cs.status,
       currentStageOrder: cs.currentStageOrder,
+      joinToken,
       startedAt: toJsonIsoUtc(cs.startedAt),
       completedAt: toJsonIsoUtc(cs.completedAt),
       caseVersionSnapshot: cs.caseVersionSnapshot,
-      case: stripCase(cs.case),
+      totalStages: cs.case.stages.length,
+      case: caseSummary,
       studyGroup: {
         id: cs.studyGroup.id,
         name: cs.studyGroup.name,
@@ -196,7 +199,7 @@ async function buildSessionPayload(
           }
         : null,
     },
-    groupMembers,
+    leaderCandidates,
     canEditSessionSettings,
     currentStage: currentStage
       ? { ...currentStage, blocks: currentStage.blocks }
@@ -212,12 +215,16 @@ async function buildSessionPayload(
     timeline: timelineSubmissions.map((sub) => ({
       stageOrder: sub.stage.order,
       stageTitle: sub.stage.title,
+      learningGoals: sub.stage.learningGoals,
       submittedAt: toJsonIsoUtc(sub.submittedAt),
       openedAt: toJsonIsoUtc(sub.openedAt),
       hypotheses: sub.hypotheses,
       questions: sub.questions,
     })),
     canEdit,
+    guestIdeas: guestIdeas.map((row) =>
+      serializeGuestIdea(row, stageById.get(row.caseStageId)),
+    ),
     analytics: timelineSubmissions.map((sub) => ({
       stageOrder: sub.stage.order,
       openedAt: toJsonIsoUtc(sub.openedAt),
@@ -231,6 +238,7 @@ export function registerSessionRoutes(app: Express) {
     const a = await requireUser(req);
     if (sendAuth(res, a)) return;
     const { session } = a;
+    await sweepDuplicateOpenSessions();
     const caseId =
       typeof req.query.caseId === "string" ? req.query.caseId : undefined;
     const sessions = await fetchSessionsList({
@@ -343,13 +351,34 @@ export function registerSessionRoutes(app: Express) {
     }
     const firstStage = medicalCase.stages[0];
     if (!firstStage) return errorResponse(res, "У кейса нет этапов", 400);
+    if (!body.forceNew) {
+      const openRows = await pool<
+        { id: string; currentStageOrder: number }[]
+      >`
+        SELECT id, "currentStageOrder" FROM "CaseSession"
+        WHERE "caseId" = ${medicalCase.id}
+          AND "studyGroupId" = ${studyGroupId}
+          AND status = 'IN_PROGRESS'
+        ORDER BY "currentStageOrder" DESC, "startedAt" DESC
+        LIMIT 1
+      `;
+      const open = openRows[0];
+      if (open) {
+        return res.status(409).json({
+          error: "У этой группы уже идёт занятие по этому кейсу",
+          existingSessionId: open.id,
+          currentStageOrder: open.currentStageOrder,
+        });
+      }
+    }
     const sessionId = randomUUID();
+    const joinToken = newJoinToken();
     const poolConn = getSql();
     await poolConn.begin(async (txn) => {
       const sql = asTransactionSql(poolConn, txn);
       await sql`
         INSERT INTO "CaseSession" (
-          id, "caseId", "studyGroupId", "leaderUserId", status, "currentStageOrder", "caseVersionSnapshot"
+          id, "caseId", "studyGroupId", "leaderUserId", status, "currentStageOrder", "caseVersionSnapshot", "joinToken"
         )
         VALUES (
           ${sessionId},
@@ -358,7 +387,8 @@ export function registerSessionRoutes(app: Express) {
           ${body.leaderUserId},
           'IN_PROGRESS',
           ${firstStage.order},
-          ${medicalCase.caseVersion}
+          ${medicalCase.caseVersion},
+          ${joinToken}
         )
       `;
       await sql`
@@ -724,115 +754,19 @@ export function registerSessionRoutes(app: Express) {
       const sortedSubs = [...cs.submissions].sort(
         (a, b) => a.stage.order - b.stage.order,
       );
-      const lines: string[] = [];
-      for (const sub of sortedSubs) {
-        lines.push(`Этап ${sub.stage.order}: ${sub.stage.title}`);
-        lines.push(
-          "Гипотезы: " +
-            (sub.hypotheses.length
-              ? sub.hypotheses.map((h) => h.text).join(" | ")
-              : "—"),
-        );
-        lines.push(
-          "Вопросы: " +
-            (sub.questions.length
-              ? sub.questions.map((q) => q.text).join(" | ")
-              : "—"),
-        );
-        lines.push("");
-      }
       const teacherKey =
         session.user.role === "ADMIN" || session.user.role === "TEACHER"
           ? (cs.case.teacherKey ?? "")
           : "";
-      const stageCount = sortedSubs.length;
-      const stageStats = sortedSubs.map((sub) => ({
-        stageOrder: sub.stage.order,
-        hypothesisCount: sub.hypotheses.filter((h) => h.text.trim().length > 0)
-          .length,
-        questionCount: sub.questions.filter((q) => q.text.trim().length > 0)
-          .length,
-      }));
-      const llm = await chatCompletion(
-        [
-          {
-            role: "system",
-            content: `Ты методист медицинского образования. Проанализируй ход работы по клиническому кейсу.
-
-В тексте анализа (analysisMarkdown) по-прежнему поощряй широту предварительных гипотез как полезную привычку обучения — но не смягчай цифры оценок.
-
-ОЦЕНКИ score (0–100) — ЖЁСТКО, без снисхождения. Ориентиры (если данных мало — ставь нижнюю границу диапазона):
-- Нет ни одной непустой гипотезы И нет ни одного непустого вопроса на этапе → **score = 0**. Не придумывай «зачёт за намерение».
-- Только 1–2 короткие гипотезы, вопросов нет → обычно **5–20**, не выше **25**.
-- Есть гипотезы (3+), но вопросов нет → обычно не выше **35–45** без сильной аргументации в данных.
-- Нет гипотез, но есть вопросы → обычно **15–30**.
-- И гипотезы (несколько, осмысленные), и вопросы, логика видна → можно **50–70**.
-- **70+** только при реально плотной, связной работе этапа.
-- **85+** почти не используй — резерв для выдающейся работы.
-
-averageScore — среднее арифметическое score по этапам, округлённое до целого.
-
-Поле analysisMarkdown — развёрнутый текст на русском в Markdown:
-- Для каждого этапа — раздел ## «Этап N: …» (название как во входных данных).
-- Внутри этапа три подраздела ### в порядке: Положительные качества | Отрицательные качества | Рекомендации (маркированные списки; если пусто — строка «—»).
-- Названия гипотез из данных выделяй **жирным**.
-- В конце опционально ## Общие замечания с теми же тремя ###.
-- В тексте analysisMarkdown можно кратко упомянуть баллы этапов, но основные числа должны быть в stageScores и averageScore.
-
-Ответ строго один JSON-объект (без текста вокруг) вида:
-{"analysisMarkdown":"…","stageScores":[{"stageOrder":1,"stageTitle":"кратко","score":75},…],"averageScore":73}
-stageScores.length должно быть ${stageCount} (по числу этапов во входе). stageTitle — короткая подпись этапа.
-
-Не выставляй итоговую оценку вместо преподавателя — только предварительные баллы в полях score. Будь сдержан и требователен к цифрам.
-Версия промпта: ${SESSION_ANALYZE_VERSION}.`,
-          },
-          {
-            role: "user",
-            content: `Данные по этапам:\n${lines.join("\n")}\n\nЭталон преподавателя (если есть): ${teacherKey || "не предоставлен"}`,
-          },
-        ],
-        true,
-      );
-      let analysis: string;
-      let model: string | null = null;
-      let scoresPayload: ReturnType<typeof normalizeScores> | null = null;
-      if (llm.ok && llm.text) {
-        const parsed = parseAiAnalysisResponse(llm.text);
-        if (parsed.ok) {
-          analysis = parsed.data.analysisMarkdown.trim();
-          scoresPayload = normalizeScores(parsed.data);
-          if (scoresPayload.stageScores.length !== stageCount && stageCount > 0) {
-            scoresPayload = null;
-          } else if (scoresPayload !== null) {
-            scoresPayload = enforceStrictStageScores(scoresPayload, stageStats);
-          }
-        } else {
-          const loose = recoverAiAnalysisFromLooseJson(llm.text);
-          if (loose) {
-            analysis = loose.analysisMarkdown;
-            if (
-              loose.scores &&
-              (stageCount === 0 ||
-                loose.scores.stageScores.length === stageCount)
-            ) {
-              scoresPayload = enforceStrictStageScores(loose.scores, stageStats);
-            }
-          } else {
-            analysis = llm.text.trim();
-          }
-        }
-        model = llm.model ?? null;
-      } else if (!llm.ok && llm.missingKey) {
-        analysis =
-          "## Локальный режим\n\nНе заданы GEMINI_API_KEY и OPENAI_API_KEY. Ниже сырые данные для ручного разбора:\n\n" +
-          lines.join("\n");
-        model = "offline";
-      } else {
-        analysis =
-          "Не удалось получить ответ модели. Данные сессии:\n\n" + lines.join("\n");
-        model = "error";
-      }
-      analysis = unwrapAnalysisMarkdownIfJsonWrapped(analysis);
+      const { analysis, model, scoresPayload, usage } = await runSessionAnalysis({
+        stages: sortedSubs.map((sub) => ({
+          stageOrder: sub.stage.order,
+          stageTitle: sub.stage.title,
+          hypotheses: sub.hypotheses.map((h) => h.text),
+          questions: sub.questions.map((q) => q.text),
+        })),
+        teacherKey,
+      });
       const pool = getSql();
       const scoresParam =
         scoresPayload !== null
@@ -856,6 +790,12 @@ stageScores.length должно быть ${stageCount} (по числу этап
           "aiPromptVersion" = EXCLUDED."aiPromptVersion",
           "aiPreliminaryScores" = EXCLUDED."aiPreliminaryScores"
       `;
+      if (usage) {
+        await pool`
+          INSERT INTO "AiUsageLog" (id, "caseSessionId", model, "promptTokens", "completionTokens")
+          VALUES (${randomUUID()}, ${cs.id}, ${model ?? "unknown"}, ${usage.promptTokens}, ${usage.completionTokens})
+        `;
+      }
       const outcomeRows = await pool<
         {
           id: string;

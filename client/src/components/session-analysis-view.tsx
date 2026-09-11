@@ -77,10 +77,10 @@ function extractStageOrderFromTitle(title: string): number | null {
 
 const mdComponents: Partial<Components> = {
   h1: ({ children }) => (
-    <h4 className="mb-2 text-sm font-semibold text-slate-900">{children}</h4>
+    <h4 className="mb-2 text-sm font-semibold text-ink">{children}</h4>
   ),
   h2: ({ children }) => (
-    <h4 className="mb-2 mt-4 border-t border-slate-100 pt-3 text-sm font-semibold text-violet-900 first:mt-0 first:border-t-0 first:pt-0">
+    <h4 className="mb-2 mt-4 border-t border-line pt-3 text-sm font-semibold text-[var(--color-accent)] first:mt-0 first:border-t-0 first:pt-0">
       {children}
     </h4>
   ),
@@ -88,9 +88,9 @@ const mdComponents: Partial<Components> = {
     const t = nodeToPlainText(children).trim().toLowerCase();
     if (t.includes("положительн")) {
       return (
-        <h5 className="mb-2 mt-5 flex items-center gap-2 border-b-2 border-emerald-400/70 pb-2 text-sm font-semibold text-emerald-950 first:mt-0">
+        <h5 className="mb-2 mt-5 flex items-center gap-2 border-b-2 border-[var(--color-success-border)] pb-2 text-sm font-semibold text-[var(--color-success)] first:mt-0">
           <span
-            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-emerald-500"
+            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-[var(--color-success)]"
             aria-hidden
           />
           {children}
@@ -99,9 +99,9 @@ const mdComponents: Partial<Components> = {
     }
     if (t.includes("отрицательн")) {
       return (
-        <h5 className="mb-2 mt-5 flex items-center gap-2 border-b-2 border-rose-400/70 pb-2 text-sm font-semibold text-rose-950">
+        <h5 className="mb-2 mt-5 flex items-center gap-2 border-b-2 border-[var(--color-danger-border)] pb-2 text-sm font-semibold text-[var(--color-danger)]">
           <span
-            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-rose-500"
+            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-[var(--color-danger)]"
             aria-hidden
           />
           {children}
@@ -110,9 +110,9 @@ const mdComponents: Partial<Components> = {
     }
     if (t.includes("рекомендац")) {
       return (
-        <h5 className="mb-2 mt-5 flex items-center gap-2 border-b-2 border-sky-400/70 pb-2 text-sm font-semibold text-sky-950">
+        <h5 className="mb-2 mt-5 flex items-center gap-2 border-b-2 border-[var(--color-accent)]/40 pb-2 text-sm font-semibold text-[var(--color-accent)]">
           <span
-            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-sky-500"
+            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full bg-[var(--color-accent)]"
             aria-hidden
           />
           {children}
@@ -120,24 +120,24 @@ const mdComponents: Partial<Components> = {
       );
     }
     return (
-      <h5 className="mb-1.5 mt-4 text-sm font-medium text-slate-800">{children}</h5>
+      <h5 className="mb-1.5 mt-4 text-sm font-medium text-ink">{children}</h5>
     );
   },
   p: ({ children }) => (
-    <p className="my-2 text-sm leading-relaxed text-slate-700">{children}</p>
+    <p className="my-2 text-sm leading-relaxed text-ink-soft">{children}</p>
   ),
   ul: ({ children }) => (
-    <ul className="my-2 list-disc space-y-1.5 pl-5 marker:text-violet-400">
+    <ul className="my-2 list-disc space-y-1.5 pl-5 marker:text-[var(--color-accent)]">
       {children}
     </ul>
   ),
   ol: ({ children }) => (
-    <ol className="my-2 list-decimal space-y-1.5 pl-5 text-sm text-slate-700 marker:font-medium marker:text-violet-700">
+    <ol className="my-2 list-decimal space-y-1.5 pl-5 text-sm text-ink-soft marker:font-medium marker:text-[var(--color-accent)]">
       {children}
     </ol>
   ),
   li: ({ children }) => (
-    <li className="text-sm leading-relaxed text-slate-700 [&_ol]:mt-2 [&_ul]:mt-2">
+    <li className="text-sm leading-relaxed text-ink-soft [&_ol]:mt-2 [&_ul]:mt-2">
       {children}
     </li>
   ),
@@ -146,28 +146,28 @@ const mdComponents: Partial<Components> = {
     const chip = t.length > 0 && t.length <= 80 && !t.includes("\n");
     if (chip) {
       return (
-        <span className="mx-0.5 inline-flex max-w-full align-baseline break-words rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-950">
+        <span className="mx-0.5 inline-flex max-w-full align-baseline break-words rounded-md border border-[var(--color-warning-border)] bg-[var(--color-warning-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--color-warning)]">
           {children}
         </span>
       );
     }
     return (
-      <strong className="font-semibold text-slate-900">{children}</strong>
+      <strong className="font-semibold text-ink">{children}</strong>
     );
   },
   em: ({ children }) => (
-    <em className="text-violet-900/85">{children}</em>
+    <em className="text-ink-soft">{children}</em>
   ),
   blockquote: ({ children }) => (
-    <blockquote className="my-3 border-l-4 border-violet-200 bg-violet-50/50 py-2 pl-4 pr-2 text-sm text-slate-700">
+    <blockquote className="my-3 rounded-[var(--radius-sm)] border border-line bg-surface py-2 px-3 text-sm text-ink-soft">
       {children}
     </blockquote>
   ),
-  hr: () => <hr className="my-4 border-slate-200" />,
+  hr: () => <hr className="my-4 border-line" />,
   a: ({ href, children }) => (
     <a
       href={href}
-      className="font-medium text-teal-700 underline decoration-teal-300 underline-offset-2 hover:text-teal-900"
+      className="font-medium text-brand-700 underline decoration-brand-200 underline-offset-2 hover:text-brand-800"
       target="_blank"
       rel="noopener noreferrer"
     >
@@ -175,12 +175,12 @@ const mdComponents: Partial<Components> = {
     </a>
   ),
   code: ({ children }) => (
-    <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-800">
+    <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-xs text-ink">
       {children}
     </code>
   ),
   pre: ({ children }) => (
-    <pre className="my-3 overflow-x-auto rounded-lg border border-slate-200 bg-slate-900/95 p-3 text-xs text-slate-100">
+    <pre className="my-3 overflow-x-auto rounded-lg border border-line bg-[var(--color-ink)] p-3 text-xs text-[var(--color-elevated)]">
       {children}
     </pre>
   ),
@@ -209,7 +209,7 @@ export function SessionAnalysisView({
   return (
     <div className="space-y-4">
       {blocks.length === 0 ? (
-        <p className="text-sm text-slate-500">Текст анализа пуст</p>
+        <p className="text-sm text-muted">Текст анализа пуст</p>
       ) : (
         <div className="space-y-4">
           {blocks.map((block, i) => {
@@ -232,15 +232,15 @@ export function SessionAnalysisView({
             return (
             <article
               key={`${block.title}-${i}`}
-              className="overflow-hidden rounded-xl border border-slate-200/90 bg-gradient-to-b from-white to-slate-50/90 shadow-sm ring-1 ring-slate-100/80"
+              className="ui-card overflow-hidden"
             >
-              <header className="flex flex-wrap items-start justify-between gap-3 border-b border-violet-100 bg-gradient-to-r from-violet-50/90 to-white px-4 py-3">
-                <h3 className="min-w-0 flex-1 text-sm font-semibold tracking-tight text-violet-950">
+              <header className="flex flex-wrap items-start justify-between gap-3 border-b border-line bg-surface px-4 py-3">
+                <h3 className="min-w-0 flex-1 text-sm font-semibold tracking-tight text-ink">
                   {block.title}
                 </h3>
                 {badge != null ? (
                   <span
-                    className="shrink-0 rounded-lg bg-violet-600 px-2.5 py-1 text-xs font-bold tabular-nums text-white shadow-sm"
+                    className="shrink-0 rounded-[8px] bg-brand px-2.5 py-1 text-xs font-semibold tabular-nums text-[var(--color-on-action)]"
                     title="Предварительная оценка ИИ по 100-балльной шкале"
                   >
                     {isGeneral ? "Среднее" : "Балл"}: {badge}/100
@@ -251,7 +251,7 @@ export function SessionAnalysisView({
                 {block.body ? (
                   <MarkdownBody source={block.body} />
                 ) : (
-                  <p className="text-sm text-slate-500">Нет содержимого</p>
+                  <p className="text-sm text-muted">Нет содержимого</p>
                 )}
               </div>
             </article>

@@ -1,36 +1,42 @@
 import { Link, Navigate } from "react-router-dom";
 import { useAuth } from "@/auth-context";
+import {
+  IconBook,
+  IconClipboard,
+  IconGrid,
+  IconUser,
+} from "@/components/icons";
 
 const cards = [
   {
     to: "/admin/users",
     title: "Пользователи",
-    desc: "Создание, редактирование и удаление учётных записей",
-    color: "bg-violet-100 text-violet-600",
+    desc: "Учётные записи преподавателей и администраторов",
+    icon: IconUser,
   },
   {
     to: "/cases",
     title: "Кейсы",
-    desc: "Управление клиническими кейсами, этапами и блоками",
-    color: "bg-brand-100 text-brand-600",
+    desc: "Клинические кейсы, этапы и блоки",
+    icon: IconBook,
   },
   {
     to: "/sessions",
-    title: "Сессии",
-    desc: "Просмотр и управление сессиями прохождения",
-    color: "bg-teal-100 text-teal-600",
+    title: "Занятия",
+    desc: "Прохождения кейсов с учебными группами",
+    icon: IconClipboard,
   },
   {
     to: "/admin/references",
     title: "Справочники",
     desc: "Кафедры, факультеты, уровни курсов",
-    color: "bg-amber-100 text-amber-600",
+    icon: IconGrid,
   },
   {
     to: "/analytics",
     title: "Аналитика",
-    desc: "Сводка по кафедрам, группам и кейсам",
-    color: "bg-violet-100 text-violet-600",
+    desc: "Оценки групп и студентов, ответы с телефонов, время по этапам",
+    wide: true,
   },
 ];
 
@@ -42,37 +48,44 @@ export function AdminPage() {
   return (
     <div className="space-y-10">
       <div>
-        <h1 className="font-display text-3xl font-bold tracking-tight text-slate-900">
-          Панель администратора
-        </h1>
-        <p className="mt-2 text-slate-500">
-          Управление платформой клинических кейсов
+        <p className="ui-kicker">Управление</p>
+        <h1 className="ui-title mt-2">Панель администратора</h1>
+        <p className="mt-2 max-w-[48ch] text-ink-soft">
+          Пользователи, справочники и учебный контур платформы.
         </p>
       </div>
 
-      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-        {cards.map((c, i) => (
-          <Link
-            key={c.to}
-            to={c.to}
-            className={`group rounded-2xl border border-white/80 bg-white/90 p-6 shadow-card backdrop-blur-sm transition hover:-translate-y-0.5 hover:border-brand-200/60 hover:shadow-soft motion-safe:animate-fade-up motion-safe:duration-300`}
-            style={{ animationDelay: `${i * 60}ms` }}
-          >
-            <div
-              className={`mb-4 flex h-10 w-10 items-center justify-center rounded-xl ${c.color} transition group-hover:scale-105`}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {cards.map((c) => {
+          const Icon = "icon" in c ? c.icon : null;
+          return (
+            <Link
+              key={c.to}
+              to={c.to}
+              className={`ui-card-hover p-6 ${c.wide ? "sm:col-span-2 lg:col-span-3 bg-brand text-[var(--color-on-action)]" : ""}`}
             >
-              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
-              </svg>
-            </div>
-            <h2 className="font-display text-base font-semibold text-slate-900">
-              {c.title}
-            </h2>
-            <p className="mt-1.5 text-sm leading-relaxed text-slate-500">
-              {c.desc}
-            </p>
-          </Link>
-        ))}
+              {Icon ? (
+                <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-[10px] bg-brand-50 text-brand-700">
+                  <Icon className="h-5 w-5" />
+                </div>
+              ) : (
+                <p className="text-xs font-medium uppercase tracking-[0.12em] text-white/50">
+                  Сводка
+                </p>
+              )}
+              <h2
+                className={`mt-1 text-base font-semibold tracking-tight ${c.wide ? "text-white" : "text-ink"}`}
+              >
+                {c.title}
+              </h2>
+              <p
+                className={`mt-1.5 text-sm leading-relaxed ${c.wide ? "text-white/65" : "text-ink-soft"}`}
+              >
+                {c.desc}
+              </p>
+            </Link>
+          );
+        })}
       </div>
     </div>
   );

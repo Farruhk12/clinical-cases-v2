@@ -2,15 +2,18 @@ import { Link, useNavigate } from "react-router-dom";
 import { useState } from "react";
 import { apiFetch } from "@/lib/api-fetch";
 import { downloadCasePptx } from "@/lib/downloadCasePptx";
+import { LoadingOverlay } from "@/components/LoadingOverlay";
 
 export function CaseRowActions({
   caseId,
   title,
   sessionCount,
+  hideStart = false,
 }: {
   caseId: string;
   title: string;
   sessionCount: number;
+  hideStart?: boolean;
 }) {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
@@ -22,7 +25,7 @@ export function CaseRowActions({
     setError(null);
     const extra =
       sessionCount > 0
-        ? `\n\nСейчас у кейса ${sessionCount} сесс. Пока они есть, сервер не даст удалить кейс — сначала в редакторе нажмите «Закрыть и удалить все сессии этого кейса».`
+        ? `\n\nСейчас у кейса ${sessionCount} занят. Пока они есть, сервер не даст удалить кейс — сначала в редакторе нажмите «Закрыть и удалить все занятия этого кейса».`
         : "";
     const ok = window.confirm(
       `Удалить кейс «${title}» безвозвратно (этапы, блоки, данные)?${extra}`,
@@ -57,37 +60,33 @@ export function CaseRowActions({
   }
 
   return (
-    <div className="flex w-full flex-col gap-1.5 sm:w-auto sm:items-end">
-      <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:justify-end">
-        <Link
-          to={`/cases/${caseId}/edit`}
-          className="inline-flex min-h-10 items-center justify-center rounded-xl border border-slate-200 px-3 py-2 text-center text-sm text-slate-600 transition hover:bg-slate-50 sm:min-h-0 sm:px-3.5 sm:py-1.5"
-        >
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        <Link to={`/cases/${caseId}/edit`} className="ui-btn-secondary">
           Редактировать
         </Link>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void deleteCase()}
-          className="inline-flex min-h-10 items-center justify-center rounded-xl border border-red-200 px-3 py-2 text-sm text-red-600 transition hover:bg-red-50 disabled:opacity-60 sm:min-h-0 sm:px-3.5 sm:py-1.5"
-        >
-          {busy ? "Удаление..." : "Удалить"}
-        </button>
         <button
           type="button"
           disabled={pptxBusy}
           onClick={() => void exportPptx()}
           title="Слайды PowerPoint по этапам и блокам (как в базе)"
-          className="col-span-2 inline-flex min-h-10 items-center justify-center rounded-xl border-2 border-emerald-700 !bg-emerald-600 px-3 py-2 text-sm font-semibold !text-white shadow-sm transition hover:!bg-emerald-700 disabled:opacity-60 sm:col-span-1 sm:min-h-0 sm:px-3.5 sm:py-1.5"
+          className="ui-btn-secondary"
         >
-          {pptxBusy ? "PPTX…" : "Скачать PPTX"}
+          Скачать PPTX
         </button>
-        <Link
-          to={`/sessions/new?caseId=${caseId}`}
-          className="col-span-2 inline-flex min-h-10 items-center justify-center rounded-xl bg-slate-900 px-3 py-2 text-center text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 sm:col-span-1 sm:min-h-0 sm:px-3.5 sm:py-1.5"
+        {hideStart ? null : (
+          <Link to={`/sessions/new?caseId=${caseId}`} className="ui-btn-primary">
+            Начать занятие
+          </Link>
+        )}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void deleteCase()}
+          className="ui-btn-danger"
         >
-          Запустить сессию
-        </Link>
+          Удалить
+        </button>
       </div>
       {error ? (
         <p className="max-w-xs text-right text-xs text-red-600">{error}</p>
@@ -95,6 +94,10 @@ export function CaseRowActions({
       {pptxError ? (
         <p className="max-w-xs text-right text-xs text-red-600">{pptxError}</p>
       ) : null}
+
+      {(busy || pptxBusy) && (
+        <LoadingOverlay label={busy ? "Удаляем кейс…" : "Формируем PPTX…"} />
+      )}
     </div>
   );
 }

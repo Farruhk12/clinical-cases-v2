@@ -67,7 +67,7 @@ export function createApiApp(options?: CreateApiAppOptions) {
           db: false,
           error: msg,
           hint: /getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT/i.test(msg)
-            ? "DATABASE_URL не может подключиться. Используйте pooler строку из Supabase (порт 6543)."
+            ? "DATABASE_URL не может подключиться. Используйте pooled-строку из Neon Dashboard."
             : /DATABASE_URL/i.test(msg)
               ? "Переменная DATABASE_URL не задана в Vercel Environment Variables."
               : undefined,

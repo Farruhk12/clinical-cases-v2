@@ -8,9 +8,11 @@ type Case = CaseDetail;
 type CaseStage = CaseDetail["stages"][number];
 type StageBlock = CaseStage["blocks"][number];
 import { BlockView } from "@/components/block-view";
+import { PageLoader } from "@/components/PageLoader";
+import { LoadingOverlay } from "@/components/LoadingOverlay";
 import { apiFetch } from "@/lib/api-fetch";
 import { downloadCasePptx } from "@/lib/downloadCasePptx";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 type AiPreviewState = {
@@ -27,7 +29,7 @@ type StageWithBlocks = CaseStage & { blocks: StageBlock[] };
 type CaseFacultyRow = { facultyId: string; faculty: Faculty };
 type CaseCourseRow = { courseLevelId: string; courseLevel: CourseLevel };
 
-type CasePayload = Case & {
+export type CaseEditorPayload = Case & {
   stages: StageWithBlocks[];
   department: Department;
   caseFaculties: CaseFacultyRow[];
@@ -53,14 +55,21 @@ export function CaseEditor({
   sessionCount,
   reference,
   fixedDepartmentId,
+  initialCase,
 }: {
   caseId: string;
   sessionCount: number;
   reference: CaseEditorReference;
   fixedDepartmentId?: string | null;
+  initialCase?: CaseEditorPayload | null;
 }) {
-  const navigate = useNavigate();
-  const [data, setData] = useState<CasePayload | null>(null);
+  const [data, setData] = useState<CaseEditorPayload | null>(
+    () => initialCase ?? null,
+  );
+  const [selectedStageId, setSelectedStageId] = useState<string | null>(
+    () => initialCase?.stages[0]?.id ?? null,
+  );
+  const [savedFlash, setSavedFlash] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [formattingBlockId, setFormattingBlockId] = useState<string | null>(
@@ -68,7 +77,7 @@ export function CaseEditor({
   );
   const [aiPreview, setAiPreview] = useState<AiPreviewState | null>(null);
   const [committingPreview, setCommittingPreview] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialCase);
   const [wipingSessions, setWipingSessions] = useState(false);
   const [pptxBusy, setPptxBusy] = useState(false);
   const [liveSessionCount, setLiveSessionCount] = useState(sessionCount);
@@ -87,14 +96,19 @@ export function CaseEditor({
       setLoading(false);
       return;
     }
-    const j = (await res.json()) as { case: CasePayload };
+    const j = (await res.json()) as { case: CaseEditorPayload };
     setData(j.case);
     setLoading(false);
   }, [caseId]);
 
   useEffect(() => {
+    if (initialCase?.id === caseId) {
+      setData(initialCase);
+      setLoading(false);
+      return;
+    }
     void load();
-  }, [load]);
+  }, [caseId, initialCase, load]);
 
   async function exportPptx() {
     if (!data) return;
@@ -108,8 +122,8 @@ export function CaseEditor({
   async function deleteAllSessionsForCase() {
     if (liveSessionCount <= 0) return;
     const confirmed = window.confirm(
-      `Удалить все сессии этого кейса (${liveSessionCount} шт.)?\n\n` +
-        "Безвозвратно удалятся прохождения: гипотезы, вопросы, аналитика этапов и результаты ИИ. После этого снова можно будет добавлять и удалять этапы и блоки в редакторе.",
+      `Удалить все занятия этого кейса (${liveSessionCount} шт.)?\n\n` +
+        "Безвозвратно удалятся прохождения: гипотезы, вопросы и результаты ИИ. После этого снова можно будет добавлять и удалять этапы.",
     );
     if (!confirmed) return;
     setWipingSessions(true);
@@ -153,6 +167,16 @@ export function CaseEditor({
     [data],
   );
 
+  useEffect(() => {
+    if (stages.length === 0) {
+      setSelectedStageId(null);
+      return;
+    }
+    if (!selectedStageId || !stages.some((s) => s.id === selectedStageId)) {
+      setSelectedStageId(stages[0]!.id);
+    }
+  }, [stages, selectedStageId]);
+
   function buildPatchBody() {
     if (!data) return null;
     const orderedStages = sortedStages(data.stages);
@@ -173,7 +197,7 @@ export function CaseEditor({
           order: stageIdx + 1,
           title: s.title,
           isFinalReveal: isLastStage && n > 0,
-          learningGoals: null as string | null,
+          learningGoals: s.learningGoals ?? null,
           blocks: blocks.map((b, i) => ({
             id: b.id,
             order: i,
@@ -188,14 +212,14 @@ export function CaseEditor({
     };
   }
 
-  async function save() {
-    if (!data) return;
+  async function persist(): Promise<CaseEditorPayload | null> {
+    if (!data) return null;
     if (data.caseFaculties.length === 0 || data.caseCourseLevels.length === 0) {
       setError("Нужен хотя бы один факультет и один курс");
-      return;
+      return null;
     }
     const body = buildPatchBody();
-    if (!body) return;
+    if (!body) return null;
     setSaving(true);
     setError(null);
     try {
@@ -207,18 +231,34 @@ export function CaseEditor({
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         setError(
-          typeof j.error === "string"
-            ? j.error
-            : "Ошибка сохранения",
+          typeof j.error === "string" ? j.error : "Ошибка сохранения",
         );
-        return;
+        return null;
       }
-      navigate("/cases");
+      const j = (await res.json()) as { case: CaseEditorPayload };
+      if (j.case) {
+        setData(j.case);
+        const prevOrder = stages.find((s) => s.id === selectedStageId)?.order;
+        const next =
+          (prevOrder
+            ? sortedStages(j.case.stages).find((s) => s.order === prevOrder)
+            : null) ?? sortedStages(j.case.stages)[0];
+        if (next) setSelectedStageId(next.id);
+        setSavedFlash(true);
+        window.setTimeout(() => setSavedFlash(false), 1600);
+        return j.case;
+      }
+      return data;
     } catch {
       setError("Сеть недоступна или запрос прерван. Попробуйте ещё раз.");
+      return null;
     } finally {
       setSaving(false);
     }
+  }
+
+  async function save() {
+    await persist();
   }
 
   function findBlock(stageId: string, blockId: string) {
@@ -228,16 +268,40 @@ export function CaseEditor({
   }
 
   async function requestAiPreview(stageId: string, blockId: string) {
-    const block = findBlock(stageId, blockId);
+    let sid = stageId;
+    let bid = blockId;
+    let block = findBlock(sid, bid);
     if (!block) return;
+    if (bid.startsWith("temp-") || sid.startsWith("temp-")) {
+      const stageIndex = stages.findIndex((s) => s.id === sid);
+      const blockIndex = block
+        ? sortedBlocks(stages[stageIndex]?.blocks ?? []).findIndex(
+            (b) => b.id === bid,
+          )
+        : -1;
+      const saved = await persist();
+      if (!saved) return;
+      const newStage = sortedStages(saved.stages)[stageIndex];
+      const newBlock =
+        newStage && blockIndex >= 0
+          ? sortedBlocks(newStage.blocks)[blockIndex]
+          : undefined;
+      if (!newStage || !newBlock) {
+        setError("Сохраните кейс и повторите оформление");
+        return;
+      }
+      sid = newStage.id;
+      bid = newBlock.id;
+      block = newBlock;
+    }
     setError(null);
-    setFormattingBlockId(blockId);
+    setFormattingBlockId(bid);
     try {
       const res = await apiFetch("/api/ai/format-block", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          blockId,
+          blockId: bid,
           previewOnly: true,
           rawText: block.rawText ?? "",
         }),
@@ -260,8 +324,8 @@ export function CaseEditor({
         return;
       }
       setAiPreview({
-        stageId,
-        blockId,
+        stageId: sid,
+        blockId: bid,
         blockType: j.preview.blockType,
         formattedContent: j.preview.formattedContent,
         rawText: block.rawText,
@@ -384,6 +448,18 @@ export function CaseEditor({
         },
       ],
     });
+    setSelectedStageId(tempId);
+  }
+
+  function removeStage(stageId: string) {
+    if (!data || locked) return;
+    const ok = window.confirm("Удалить этот этап и все его фрагменты?");
+    if (!ok) return;
+    const nextStages = data.stages
+      .filter((s) => s.id !== stageId)
+      .map((s, i) => ({ ...s, order: i + 1 }));
+    setData({ ...data, stages: nextStages });
+    setSelectedStageId(nextStages[0]?.id ?? null);
   }
 
   function addTextBlock(stageId: string) {
@@ -513,16 +589,34 @@ export function CaseEditor({
     });
   }
 
+  const activeStage =
+    stages.find((s) => s.id === selectedStageId) ?? stages[0] ?? null;
+  const activeStageIndex = activeStage
+    ? stages.findIndex((s) => s.id === activeStage.id)
+    : -1;
+
   if (loading || !data) {
-    return <p className="text-slate-600">Загрузка…</p>;
+    return <PageLoader />;
   }
+
+  const busyLabel = saving
+    ? "Сохраняем кейс…"
+    : pptxBusy
+      ? "Формируем PPTX…"
+      : wipingSessions
+        ? "Удаляем занятия…"
+        : committingPreview
+          ? "Применяем оформление…"
+          : formattingBlockId !== null
+            ? "ИИ оформляет фрагмент…"
+            : null;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <Link
           to="/cases"
-          className="text-sm text-teal-700 hover:underline"
+          className="text-sm text-brand-800 hover:underline"
         >
           ← К списку
         </Link>
@@ -530,65 +624,92 @@ export function CaseEditor({
           type="button"
           onClick={() => void save()}
           disabled={saving}
-          className="rounded-md bg-teal-600 px-4 py-2 text-sm text-white hover:bg-teal-700 disabled:opacity-60"
+          className="ui-btn-primary"
         >
-          {saving ? "Сохранение…" : "Сохранить"}
+          Сохранить
         </button>
+        {savedFlash ? (
+          <span className="text-sm text-brand-800">Сохранено</span>
+        ) : null}
         <button
           type="button"
           onClick={() => void exportPptx()}
           disabled={pptxBusy}
           title="Экспорт текущего сохранённого в базе кейса в слайды PowerPoint"
-          className="rounded-md border-2 border-emerald-700 !bg-emerald-600 px-4 py-2 text-sm font-semibold !text-white shadow-sm hover:!bg-emerald-700 disabled:opacity-60"
+          className="ui-btn-secondary"
         >
-          {pptxBusy ? "Формирование…" : "Скачать PPTX"}
+          Скачать PPTX
         </button>
       </div>
       {locked && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        <div className="ui-alert-warning space-y-2">
           <p>
-            Уже есть сессии по этому кейсу: нельзя добавлять или удалять этапы и
-            блоки, можно править только текст в существующих полях.
+            По этому кейсу уже есть занятия: структуру этапов менять нельзя,
+            текст в существующих полях — можно.
           </p>
-          <p className="mt-2">
+          <p>
             <Link
               to={`/sessions?caseId=${caseId}`}
-              className="font-medium text-amber-950 underline hover:no-underline"
+              className="font-medium underline hover:no-underline"
             >
-              Открыть сессии этого кейса
+              Открыть занятия этого кейса
             </Link>
-            — смена ведущего, этапы и гипотезы на стороне занятия.
+            — ведущий, этапы и гипотезы на стороне занятия.
           </p>
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-amber-200/80 pt-3">
+          <div className="flex flex-wrap items-center gap-2 border-t border-[var(--color-warning-border)] pt-3">
             <button
               type="button"
               disabled={wipingSessions}
               onClick={() => void deleteAllSessionsForCase()}
-              className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-800 hover:bg-red-50 disabled:opacity-60"
+              className="ui-btn-danger"
             >
-              {wipingSessions
-                ? "Удаление…"
-                : "Закрыть и удалить все сессии этого кейса"}
+              Закрыть и удалить все занятия этого кейса
             </button>
-            <span className="text-xs text-amber-800/90">
-              После удаления можно менять структуру этапов; данные занятий не
+            <span className="text-xs">
+              После удаления снова можно менять этапы; данные занятий не
               восстановить.
             </span>
           </div>
         </div>
       )}
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="ui-alert-danger">{error}</p>}
 
-      <section className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
-        <label className="flex flex-col gap-1 text-sm font-medium text-slate-800">
+      <section className="ui-card space-y-3 p-4">
+        <label className="flex flex-col gap-1 text-sm font-medium text-ink">
           Название кейса
           <input
-            className="rounded-md border border-slate-200 px-3 py-2 font-normal"
+            className="ui-input font-normal"
             value={data.title}
             onChange={(e) => setData({ ...data, title: e.target.value })}
           />
         </label>
-        <label className="flex items-center gap-2 text-sm text-slate-700">
+        <label className="flex flex-col gap-1 text-sm font-medium text-ink">
+          Краткое описание
+          <textarea
+            className="ui-input min-h-[72px] font-normal leading-relaxed"
+            placeholder="Для себя и коллег — о чём кейс"
+            value={data.description ?? ""}
+            onChange={(e) =>
+              setData({ ...data, description: e.target.value || null })
+            }
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm font-medium text-ink">
+          Эталон для разбора
+          <textarea
+            className="ui-input min-h-[88px] font-normal leading-relaxed"
+            placeholder="Что группа должна увидеть — для ИИ после занятия"
+            value={data.teacherKey ?? ""}
+            onChange={(e) =>
+              setData({ ...data, teacherKey: e.target.value || null })
+            }
+          />
+          <span className="font-normal text-xs text-muted">
+            Скрыто от группы во время занятия. Нужно, чтобы ИИ сравнивал ход
+            разбора с вашим эталоном.
+          </span>
+        </label>
+        <label className="flex items-center gap-2 text-sm text-ink-soft">
           <input
             type="checkbox"
             checked={data.published}
@@ -598,18 +719,18 @@ export function CaseEditor({
           />
           Опубликовать в каталоге кейсов
         </label>
-        <div className="space-y-3 rounded-md border border-slate-100 bg-slate-50/90 px-3 py-3">
+        <div className="space-y-3 rounded-[var(--radius-md)] border border-line bg-surface px-3 py-3">
           <div>
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted">
               Кафедра
             </p>
             {fixedDepartmentId ? (
-              <p className="mt-1 text-sm font-medium text-slate-800">
+              <p className="mt-1 text-sm font-medium text-ink">
                 {data.department.name}
               </p>
             ) : (
               <select
-                className="mt-1 w-full max-w-md rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+                className="ui-input mt-1 max-w-md"
                 disabled={locked}
                 value={data.departmentId}
                 onChange={(e) => setDepartmentId(e.target.value)}
@@ -623,14 +744,14 @@ export function CaseEditor({
             )}
           </div>
           <fieldset className="space-y-2" disabled={locked}>
-            <legend className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            <legend className="text-xs font-medium uppercase tracking-wide text-muted">
               Факультеты (несколько)
             </legend>
             <div className="flex flex-col gap-2">
               {reference.faculties.map((f) => (
                 <label
                   key={f.id}
-                  className="flex cursor-pointer items-center gap-2 text-sm text-slate-800"
+                  className="flex cursor-pointer items-center gap-2 text-sm text-ink"
                 >
                   <input
                     type="checkbox"
@@ -643,14 +764,14 @@ export function CaseEditor({
             </div>
           </fieldset>
           <fieldset className="space-y-2" disabled={locked}>
-            <legend className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            <legend className="text-xs font-medium uppercase tracking-wide text-muted">
               Курсы (несколько)
             </legend>
             <div className="flex flex-col gap-2">
               {reference.courseLevels.map((c) => (
                 <label
                   key={c.id}
-                  className="flex cursor-pointer items-center gap-2 text-sm text-slate-800"
+                  className="flex cursor-pointer items-center gap-2 text-sm text-ink"
                 >
                   <input
                     type="checkbox"
@@ -664,177 +785,203 @@ export function CaseEditor({
               ))}
             </div>
           </fieldset>
-          <p className="text-xs text-slate-500">
-            Группа подходит для сессии, если её факультет и курс входят в отмеченные
-            списки. При наличии сессий по кейсу эти поля не меняются.
+          <p className="text-xs text-muted">
+            Группа подходит для занятия, если её факультет и курс входят в
+            отмеченные списки. При наличии занятий эти поля не меняются.
           </p>
         </div>
       </section>
 
-      {!locked && (
-        <button
-          type="button"
-          onClick={addStage}
-          className="rounded-md border border-dashed border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-        >
-          + Добавить этап
-        </button>
-      )}
-
-      {stages.length === 0 && (
-        <p className="rounded-lg border border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-600">
-          Пока нет этапов. Нажмите «Добавить этап», затем в каждом этапе
-          заполните описание и при необходимости нажмите «ИИ: как будет
-          выглядеть» (после сохранения фрагмента).
-        </p>
-      )}
-
-      <div className="space-y-8">
-        {stages.map((stage, stageIndex) => (
-          <div
-            key={stage.id}
-            className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
-          >
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-              Этап {stageIndex + 1}
-            </p>
-            <label className="flex flex-col gap-1 text-sm font-medium text-slate-800">
-              Заголовок этапа
-              <input
-                className="rounded-md border border-slate-200 px-3 py-2 font-normal"
-                value={stage.title}
-                onChange={(e) =>
-                  updateStage(stage.id, { title: e.target.value })
-                }
-              />
-            </label>
-
-            <div className="space-y-5">
-              {sortedBlocks(stage.blocks).map((block, blockIndex) => {
-                const isImage = block.blockType === "IMAGE_URL";
-                const canAi = !isImage && !block.id.startsWith("temp-");
-                return (
-                  <div
-                    key={block.id}
-                    className="rounded-lg border border-slate-200 bg-slate-50/80 p-4"
-                  >
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-xs font-medium text-slate-500">
-                        {isImage
-                          ? `Фрагмент ${blockIndex + 1}: иллюстрация`
-                          : `Фрагмент ${blockIndex + 1}: текст`}
-                      </span>
-                      <div className="flex flex-wrap items-center gap-2">
-                        {canAi && (
-                          <button
-                            type="button"
-                            disabled={formattingBlockId !== null}
-                            className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-700 disabled:opacity-60"
-                            onClick={() =>
-                              void requestAiPreview(stage.id, block.id)
-                            }
-                          >
-                            {formattingBlockId === block.id
-                              ? "Готовим предпросмотр…"
-                              : "ИИ: как будет выглядеть"}
-                          </button>
-                        )}
-                        {!canAi && !isImage && block.id.startsWith("temp-") && (
-                          <span className="text-xs text-slate-500">
-                            Сохраните кейс — затем можно оформить через ИИ
-                          </span>
-                        )}
-                        {!locked && (
-                          <button
-                            type="button"
-                            className="text-xs text-red-600 hover:underline"
-                            onClick={() => removeBlock(stage.id, block.id)}
-                          >
-                            Удалить
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {isImage ? (
-                      <div className="space-y-2">
-                        <label className="flex flex-col gap-1 text-sm text-slate-700">
-                          Ссылка на изображение
-                          <input
-                            className="rounded-md border border-slate-200 bg-white px-3 py-2"
-                            placeholder="https://…"
-                            value={block.imageUrl ?? ""}
-                            onChange={(e) =>
-                              updateBlock(stage.id, block.id, {
-                                imageUrl: e.target.value || null,
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="flex flex-col gap-1 text-sm text-slate-700">
-                          Подпись (по желанию)
-                          <input
-                            className="rounded-md border border-slate-200 bg-white px-3 py-2"
-                            value={block.imageAlt ?? ""}
-                            onChange={(e) =>
-                              updateBlock(stage.id, block.id, {
-                                imageAlt: e.target.value || null,
-                              })
-                            }
-                          />
-                        </label>
-                      </div>
-                    ) : (
-                      <label className="flex flex-col gap-1 text-sm font-medium text-slate-800">
-                        Описание
-                        <textarea
-                          className="min-h-[120px] w-full rounded-md border border-slate-200 bg-white px-3 py-2 font-normal leading-relaxed"
-                          placeholder="Жалобы, речь пациента, наблюдения врача…"
-                          value={block.rawText ?? ""}
-                          onChange={(e) =>
-                            updateBlock(stage.id, block.id, {
-                              rawText: e.target.value || null,
-                            })
-                          }
-                        />
-                      </label>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {!locked && (
-              <div className="flex flex-wrap gap-3 pt-1">
-                <button
-                  type="button"
-                  onClick={() => addTextBlock(stage.id)}
-                  className="text-sm text-teal-700 hover:underline"
-                >
-                  + Текстовый фрагмент
-                </button>
-                <button
-                  type="button"
-                  onClick={() => addImageBlock(stage.id)}
-                  className="text-sm text-teal-700 hover:underline"
-                >
-                  + Картинка по ссылке
-                </button>
-              </div>
-            )}
+      <div className="grid gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
+        <aside className="space-y-2">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted">
+            Этапы
+          </p>
+          <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible">
+            {stages.map((stage, stageIndex) => (
+              <button
+                key={stage.id}
+                type="button"
+                onClick={() => setSelectedStageId(stage.id)}
+                className={[
+                  "min-h-11 shrink-0 rounded-[10px] px-3 py-2 text-left text-sm font-medium transition lg:w-full",
+                  activeStage?.id === stage.id
+                    ? "bg-brand-50 text-brand-800"
+                    : "bg-elevated text-ink-soft ring-1 ring-line hover:text-ink",
+                ].join(" ")}
+              >
+                {stageIndex + 1}. {stage.title || "Без названия"}
+              </button>
+            ))}
           </div>
-        ))}
-      </div>
+          {!locked ? (
+            <button
+              type="button"
+              onClick={addStage}
+              className="w-full rounded-[var(--radius-md)] border border-dashed border-line-strong px-3 py-2 text-sm text-ink-soft hover:bg-surface"
+            >
+              + Добавить этап
+            </button>
+          ) : null}
+        </aside>
 
-      {!locked && stages.length > 0 && (
-        <button
-          type="button"
-          onClick={addStage}
-          className="rounded-md border border-dashed border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
-        >
-          + Добавить этап
-        </button>
-      )}
+        <div className="min-w-0">
+          {stages.length === 0 ? (
+            <p className="ui-empty">
+              Пока нет этапов. Добавьте первый — затем заполните описание и при
+              необходимости оформите текст через ИИ.
+            </p>
+          ) : activeStage ? (
+            <div className="ui-card space-y-4 p-5">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <p className="text-xs font-medium uppercase tracking-wide text-faint">
+                  Этап {activeStageIndex + 1}
+                </p>
+                {!locked ? (
+                  <button
+                    type="button"
+                    className="text-xs text-[var(--color-danger)] hover:underline"
+                    onClick={() => removeStage(activeStage.id)}
+                  >
+                    Удалить этап
+                  </button>
+                ) : null}
+              </div>
+              <label className="flex flex-col gap-1 text-sm font-medium text-ink">
+                Заголовок этапа
+                <input
+                  className="ui-input font-normal"
+                  value={activeStage.title}
+                  onChange={(e) =>
+                    updateStage(activeStage.id, { title: e.target.value })
+                  }
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm font-medium text-ink">
+                Цели этапа
+                <textarea
+                  className="ui-input min-h-[72px] font-normal leading-relaxed"
+                  placeholder="Что группа должна понять на этом шаге"
+                  value={activeStage.learningGoals ?? ""}
+                  onChange={(e) =>
+                    updateStage(activeStage.id, {
+                      learningGoals: e.target.value || null,
+                    })
+                  }
+                />
+              </label>
+
+              <div className="space-y-5">
+                {sortedBlocks(activeStage.blocks).map((block, blockIndex) => {
+                  const isImage = block.blockType === "IMAGE_URL";
+                  return (
+                    <div
+                      key={block.id}
+                      className="rounded-[var(--radius-md)] border border-line bg-surface p-4"
+                    >
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-muted">
+                          {isImage
+                            ? `Фрагмент ${blockIndex + 1}: иллюстрация`
+                            : `Фрагмент ${blockIndex + 1}: текст`}
+                        </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {!isImage ? (
+                            <button
+                              type="button"
+                              disabled={formattingBlockId !== null || saving}
+                              className="ui-btn-primary px-3 py-1.5 text-xs"
+                              onClick={() =>
+                                void requestAiPreview(activeStage.id, block.id)
+                              }
+                            >
+                              ИИ: как будет выглядеть
+                            </button>
+                          ) : null}
+                          {!locked && (
+                            <button
+                              type="button"
+                              className="text-xs text-[var(--color-danger)] hover:underline"
+                              onClick={() =>
+                                removeBlock(activeStage.id, block.id)
+                              }
+                            >
+                              Удалить
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {isImage ? (
+                        <div className="space-y-2">
+                          <label className="flex flex-col gap-1 text-sm text-ink-soft">
+                            Ссылка на изображение
+                            <input
+                              className="ui-input"
+                              placeholder="https://…"
+                              value={block.imageUrl ?? ""}
+                              onChange={(e) =>
+                                updateBlock(activeStage.id, block.id, {
+                                  imageUrl: e.target.value || null,
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1 text-sm text-ink-soft">
+                            Подпись (по желанию)
+                            <input
+                              className="ui-input"
+                              value={block.imageAlt ?? ""}
+                              onChange={(e) =>
+                                updateBlock(activeStage.id, block.id, {
+                                  imageAlt: e.target.value || null,
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      ) : (
+                        <label className="flex flex-col gap-1 text-sm font-medium text-ink">
+                          Описание
+                          <textarea
+                            className="ui-input min-h-[120px] font-normal leading-relaxed"
+                            placeholder="Жалобы, речь пациента, наблюдения врача…"
+                            value={block.rawText ?? ""}
+                            onChange={(e) =>
+                              updateBlock(activeStage.id, block.id, {
+                                rawText: e.target.value || null,
+                              })
+                            }
+                          />
+                        </label>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {!locked && (
+                <div className="flex flex-wrap gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => addTextBlock(activeStage.id)}
+                    className="text-sm text-brand-800 hover:underline"
+                  >
+                    + Текстовый фрагмент
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => addImageBlock(activeStage.id)}
+                    className="text-sm text-brand-800 hover:underline"
+                  >
+                    + Картинка по ссылке
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
 
       {aiPreview && (
         <div
@@ -851,19 +998,19 @@ export function CaseEditor({
             }
           }}
         >
-          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-[var(--radius-lg)] border border-line bg-elevated p-5 shadow-xl">
             <h2
               id="ai-preview-title"
-              className="text-lg font-semibold text-slate-900"
+              className="text-lg font-semibold text-ink"
             >
               Предпросмотр оформления
             </h2>
-            <p className="mt-1 text-sm text-slate-600">
+            <p className="mt-1 text-sm text-ink-soft">
               Так фрагмент будет показан при прохождении после применения. Исходный
               текст в поле «Описание» не меняется.
             </p>
             {aiPreview.hint ? (
-              <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <p className="ui-alert-warning mt-2">
                 {aiPreview.hint}
               </p>
             ) : null}
@@ -879,15 +1026,15 @@ export function CaseEditor({
             <div className="mt-6 flex flex-wrap gap-3">
               <button
                 type="button"
-                className="rounded-md bg-teal-600 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-60"
+                className="ui-btn-primary"
                 disabled={committingPreview}
                 onClick={() => void applyAiPreview()}
               >
-                {committingPreview ? "Применение…" : "Применить к фрагменту"}
+                Применить к фрагменту
               </button>
               <button
                 type="button"
-                className="rounded-md border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                className="ui-btn-secondary"
                 disabled={committingPreview}
                 onClick={() => setAiPreview(null)}
               >
@@ -897,6 +1044,8 @@ export function CaseEditor({
           </div>
         </div>
       )}
+
+      {busyLabel && <LoadingOverlay label={busyLabel} />}
     </div>
   );
 }

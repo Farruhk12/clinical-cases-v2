@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NewCaseForm } from "@/NewCaseForm";
 import { useAuth } from "@/auth-context";
 import { apiFetch } from "@/lib/api-fetch";
+import { PageLoader } from "@/components/PageLoader";
 
 type RefBundle = {
   departments: { id: string; name: string }[];
@@ -38,21 +39,17 @@ export function CaseNewPage() {
 
   if (error) {
     return (
-      <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-        {error}
-      </p>
+      <p className="ui-alert-danger">{error}</p>
     );
   }
 
   if (!ref) {
-    return <p className="text-slate-500">Загрузка справочников...</p>;
+    return <PageLoader />;
   }
 
   return (
     <div className="space-y-8">
-      <h1 className="font-display text-3xl font-bold tracking-tight text-slate-900">
-        Новый кейс
-      </h1>
+      <h1 className="ui-title">Новый кейс</h1>
       <NewCaseForm
         departments={ref.departments}
         faculties={ref.faculties}

@@ -5,6 +5,7 @@
 TRUNCATE TABLE
   "Hypothesis",
   "StudentQuestion",
+  "SessionGuestIdea",
   "SessionOutcome",
   "StageSubmission",
   "CaseSession",

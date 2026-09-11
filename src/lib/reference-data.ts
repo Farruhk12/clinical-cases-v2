@@ -73,31 +73,34 @@ export async function fetchStaffPickListForDepartment(
 
 export async function fetchStudyGroupsEnriched() {
   const pool = getSql();
-  const groups = await pool<
+  const rows = await pool<
     {
       id: string;
       name: string;
       facultyId: string;
       courseLevelId: string;
+      facultyName: string;
+      courseLevelName: string;
+      courseLevelSort: number;
     }[]
-  >`SELECT id, name, "facultyId", "courseLevelId" FROM "StudyGroup" ORDER BY name ASC`;
-  return Promise.all(
-    groups.map(async (g) => {
-      const [f] = await pool<{ id: string; name: string }[]>`
-        SELECT id, name FROM "Faculty" WHERE id = ${g.facultyId}
-      `;
-      const [cl] = await pool<{ id: string; name: string; sort: number }[]>`
-        SELECT id, name, sort FROM "CourseLevel" WHERE id = ${g.courseLevelId}
-      `;
-      return {
-        ...g,
-        faculty: f!,
-        courseLevel: cl!,
-        members: [] as {
-          userId: string;
-          user: { id: string; name: string | null; login: string };
-        }[],
-      };
-    }),
-  );
+  >`
+    SELECT g.id, g.name, g."facultyId", g."courseLevelId",
+      f.name AS "facultyName", cl.name AS "courseLevelName", cl.sort AS "courseLevelSort"
+    FROM "StudyGroup" g
+    JOIN "Faculty" f ON f.id = g."facultyId"
+    JOIN "CourseLevel" cl ON cl.id = g."courseLevelId"
+    ORDER BY g.name ASC
+  `;
+  return rows.map((g) => ({
+    id: g.id,
+    name: g.name,
+    facultyId: g.facultyId,
+    courseLevelId: g.courseLevelId,
+    faculty: { id: g.facultyId, name: g.facultyName },
+    courseLevel: { id: g.courseLevelId, name: g.courseLevelName, sort: g.courseLevelSort },
+    members: [] as {
+      userId: string;
+      user: { id: string; name: string | null; login: string };
+    }[],
+  }));
 }

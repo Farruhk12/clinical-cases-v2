@@ -16,27 +16,24 @@ function isSegmentedCaseHtml(html: string): boolean {
   return html.includes("data-case-part=");
 }
 
-const styleMap: Record<BlockType, { border: string; bg: string; accent: string; label: string | null }> = {
-  PLAIN: { border: "border-slate-200/60", bg: "bg-white", accent: "", label: null },
+const styleMap: Record<BlockType, { border: string; bg: string; label: string | null }> = {
+  PLAIN: { border: "border-line", bg: "bg-elevated", label: null },
   PATIENT_SPEECH: {
-    border: "border-amber-200",
-    bg: "bg-gradient-to-br from-amber-50/80 to-amber-50/40",
-    accent: "border-l-4 border-l-amber-400",
+    border: "border-line",
+    bg: "bg-[#f8f4ea]",
     label: "Речь пациента",
   },
   DOCTOR_NOTES: {
-    border: "border-sky-200",
-    bg: "bg-gradient-to-br from-sky-50/80 to-sky-50/40",
-    accent: "border-l-4 border-l-sky-400",
+    border: "border-line",
+    bg: "bg-[#eef3f9]",
     label: "Наблюдения врача",
   },
   NARRATOR: {
-    border: "border-violet-200",
-    bg: "bg-gradient-to-br from-violet-50/60 to-white",
-    accent: "border-l-4 border-l-violet-400",
+    border: "border-line",
+    bg: "bg-surface",
     label: "Повествование",
   },
-  IMAGE_URL: { border: "border-slate-200/60", bg: "bg-slate-50", accent: "", label: null },
+  IMAGE_URL: { border: "border-line", bg: "bg-surface", label: null },
 };
 
 export function BlockView({
@@ -56,7 +53,7 @@ export function BlockView({
 
   if (blockType === "IMAGE_URL" && imageUrl) {
     return (
-      <figure className="overflow-hidden rounded-2xl border border-slate-200/60 bg-slate-50 p-3 sm:p-4">
+      <figure className="ui-card overflow-hidden p-3 sm:p-4">
         <img
           src={imageUrl}
           alt={imageAlt ?? ""}
@@ -81,7 +78,7 @@ export function BlockView({
 
   if (html && segmented) {
     return (
-      <section className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-sm sm:p-6">
+      <section className="ui-card p-4 sm:p-6">
         <div
           className="case-rich-root prose prose-sm max-w-none text-slate-800 prose-p:my-3 prose-p:leading-relaxed first:prose-p:mt-0 sm:prose-base"
           dangerouslySetInnerHTML={{ __html: html }}
@@ -92,7 +89,7 @@ export function BlockView({
 
   return (
     <section
-      className={`rounded-2xl border p-4 shadow-sm sm:p-6 ${style.border} ${style.bg} ${style.accent}`}
+      className={`rounded-[var(--radius-lg)] border p-4 sm:p-6 ${style.border} ${style.bg}`}
     >
       {style.label && (
         <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-400">

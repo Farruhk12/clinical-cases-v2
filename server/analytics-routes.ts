@@ -7,6 +7,10 @@ import {
   fetchDepartmentSummary,
   fetchStudyGroupStatsForDepartment,
 } from "../src/lib/department-analytics";
+import {
+  fetchAnalyticsSessionDetail,
+  fetchTeacherAnalytics,
+} from "../src/lib/teacher-analytics";
 import { getSql } from "../src/lib/db";
 
 export function registerAnalyticsRoutes(app: Express) {
@@ -74,4 +78,63 @@ export function registerAnalyticsRoutes(app: Express) {
       byCase,
     });
   });
+
+  app.get("/api/analytics/teacher", async (req: Request, res: Response) => {
+    const a = await requireUser(req);
+    if (sendAuth(res, a)) return;
+    const { session } = a;
+    if (!isStaff(session.user.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const qDept =
+      typeof req.query.departmentId === "string"
+        ? req.query.departmentId.trim()
+        : "";
+    const groupId =
+      typeof req.query.groupId === "string" ? req.query.groupId.trim() : "";
+    const caseId =
+      typeof req.query.caseId === "string" ? req.query.caseId.trim() : "";
+
+    let departmentId = session.user.departmentId;
+    if (session.user.role === "ADMIN") {
+      departmentId = qDept || departmentId;
+    }
+    if (!departmentId) {
+      return errorResponse(res, "Укажите кафедру", 400);
+    }
+    if (session.user.role === "TEACHER" && session.user.departmentId !== departmentId) {
+      return errorResponse(res, "Нет доступа", 403);
+    }
+
+    const payload = await fetchTeacherAnalytics({
+      departmentId,
+      groupId: groupId || undefined,
+      caseId: caseId || undefined,
+    });
+    if (!payload) return errorResponse(res, "Кафедра не найдена", 404);
+    res.json(payload);
+  });
+
+  app.get(
+    "/api/analytics/sessions/:sessionId",
+    async (req: Request, res: Response) => {
+      const a = await requireUser(req);
+      if (sendAuth(res, a)) return;
+      const { session } = a;
+      if (!isStaff(session.user.role)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      const sessionId =
+        typeof req.params.sessionId === "string" ? req.params.sessionId : "";
+      if (!sessionId) return errorResponse(res, "Некорректный id", 400);
+      const detail = await fetchAnalyticsSessionDetail(
+        sessionId,
+        session.user.departmentId,
+        session.user.role === "ADMIN",
+      );
+      if (!detail) return errorResponse(res, "Занятие не найдено", 404);
+      res.json(detail);
+    },
+  );
 }

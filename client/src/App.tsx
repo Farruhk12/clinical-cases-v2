@@ -30,6 +30,16 @@ const SessionDetailPage = lazy(() =>
     default: m.SessionDetailPage,
   })),
 );
+const SessionPresentPage = lazy(() =>
+  import("@/pages/SessionPresentPage").then((m) => ({
+    default: m.SessionPresentPage,
+  })),
+);
+const JoinSessionPage = lazy(() =>
+  import("@/pages/JoinSessionPage").then((m) => ({
+    default: m.JoinSessionPage,
+  })),
+);
 const AdminPage = lazy(() =>
   import("@/pages/AdminPage").then((m) => ({ default: m.AdminPage })),
 );
@@ -48,9 +58,15 @@ const DepartmentAnalyticsPage = lazy(() =>
     default: m.DepartmentAnalyticsPage,
   })),
 );
+const AdminAiUsagePage = lazy(() =>
+  import("@/pages/AdminAiUsagePage").then((m) => ({
+    default: m.AdminAiUsagePage,
+  })),
+);
 
 function SessionDetailFooterHidden(pathname: string) {
-  const m = pathname.match(/^\/sessions\/([^/]+)$/);
+  if (pathname.startsWith("/j/")) return true;
+  const m = pathname.match(/^\/sessions\/([^/]+)(\/present)?$/);
   return Boolean(m && m[1] !== "new");
 }
 
@@ -64,12 +80,13 @@ function AppRoutes() {
 
   return (
     <>
-      <div className="flex min-h-[100dvh] flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <Suspense fallback={<LazyFallback />}>
           <Routes>
             {/* Public routes */}
             <Route path="/" element={<HomePage />} />
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/j/:token" element={<JoinSessionPage />} />
 
             {/* Authenticated routes (standard layout) */}
             <Route element={<RequireAuth />}>
@@ -88,6 +105,10 @@ function AppRoutes() {
                 path="/sessions/:sessionId"
                 element={<SessionDetailPage />}
               />
+              <Route
+                path="/sessions/:sessionId/present"
+                element={<SessionPresentPage />}
+              />
             </Route>
 
             {/* Admin-only routes */}
@@ -98,6 +119,7 @@ function AppRoutes() {
                 path="/admin/references"
                 element={<AdminReferencesPage />}
               />
+              <Route path="/admin/ai-usage" element={<AdminAiUsagePage />} />
             </Route>
 
             {/* 404 fallback */}
@@ -113,6 +135,9 @@ function AppRoutes() {
 export default function App() {
   return (
     <div className="flex min-h-[100dvh] flex-col bg-mesh">
+      <a href="#main" className="skip-link">
+        К содержанию
+      </a>
       <AppRoutes />
     </div>
   );

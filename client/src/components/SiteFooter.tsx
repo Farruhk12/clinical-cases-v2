@@ -1,9 +1,7 @@
 export function SiteFooter() {
   return (
-    <footer className="safe-area-x safe-area-b mt-auto border-t border-slate-200/70 bg-white/45 py-3.5 text-center text-xs text-slate-500 backdrop-blur-md motion-safe:animate-fade-in">
-      <p className="font-medium tracking-wide text-slate-600">
-        Автор: Бакоев Фаррух Саидчонович
-      </p>
+    <footer className="safe-area-x safe-area-b shrink-0 border-t border-line/70 bg-elevated py-1 text-center text-[11px] leading-4 text-faint">
+      <p>Developed by Farrukh Bakoev</p>
     </footer>
   );
 }

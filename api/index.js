@@ -52845,7 +52845,8 @@ function mapRow(r) {
     departmentId: r.departmentId,
     caseFaculties,
     caseCourseLevels,
-    _count: { sessions: r.sessionCount }
+    _count: { sessions: r.sessionCount },
+    stageCount: r.stageCount
   };
 }
 var caseListSelect = `
@@ -52876,7 +52877,8 @@ var caseListSelect = `
     JOIN "CourseLevel" cl ON cl.id = ccl."courseLevelId"
     WHERE ccl."caseId" = c.id
   ) AS "caseCourseLevels",
-  (SELECT COUNT(*)::int FROM "CaseSession" cs WHERE cs."caseId" = c.id) AS "sessionCount"
+  (SELECT COUNT(*)::int FROM "CaseSession" cs WHERE cs."caseId" = c.id) AS "sessionCount",
+  (SELECT COUNT(*)::int FROM "CaseStage" st WHERE st."caseId" = c.id) AS "stageCount"
 `;
 async function fetchCaseListForRole(role, departmentId) {
   const sql = getSql();
@@ -52898,37 +52900,40 @@ async function fetchCaseListForRole(role, departmentId) {
 }
 
 // src/lib/case-detail.ts
-async function loadCaseDetail(caseId) {
+async function loadCaseDetail(caseId, options = {}) {
   const sql = getSql();
   const caseRows = await sql`SELECT id, title, description, published, "teacherKey", "caseVersion", "departmentId" FROM "Case" WHERE id = ${caseId}`;
   const c = caseRows[0];
   if (!c) return null;
-  const deptRows = await sql`
-    SELECT id, name FROM "Department" WHERE id = ${c.departmentId}
-  `;
+  const [deptRows, caseFaculties, caseCourseLevels, stages] = await Promise.all([
+    sql`
+      SELECT id, name FROM "Department" WHERE id = ${c.departmentId}
+    `,
+    sql`
+      SELECT cf."caseId", cf."facultyId",
+        json_build_object('id', f.id, 'name', f.name) as faculty
+      FROM "CaseFaculty" cf
+      JOIN "Faculty" f ON f.id = cf."facultyId"
+      WHERE cf."caseId" = ${caseId}
+    `,
+    sql`
+      SELECT ccl."caseId", ccl."courseLevelId",
+        json_build_object('id', cl.id, 'name', cl.name, 'sort', cl.sort) as "courseLevel"
+      FROM "CaseCourseLevel" ccl
+      JOIN "CourseLevel" cl ON cl.id = ccl."courseLevelId"
+      WHERE ccl."caseId" = ${caseId}
+    `,
+    sql`
+      SELECT id, "caseId", "order", title, "isFinalReveal", "learningGoals"
+      FROM "CaseStage"
+      WHERE "caseId" = ${caseId}
+      ORDER BY "order" ASC
+    `
+  ]);
   const department = deptRows[0];
   if (!department) return null;
-  const caseFaculties = await sql`
-    SELECT cf."caseId", cf."facultyId",
-      json_build_object('id', f.id, 'name', f.name) as faculty
-    FROM "CaseFaculty" cf
-    JOIN "Faculty" f ON f.id = cf."facultyId"
-    WHERE cf."caseId" = ${caseId}
-  `;
-  const caseCourseLevels = await sql`
-    SELECT ccl."caseId", ccl."courseLevelId",
-      json_build_object('id', cl.id, 'name', cl.name, 'sort', cl.sort) as "courseLevel"
-    FROM "CaseCourseLevel" ccl
-    JOIN "CourseLevel" cl ON cl.id = ccl."courseLevelId"
-    WHERE ccl."caseId" = ${caseId}
-  `;
-  const stages = await sql`
-    SELECT id, "caseId", "order", title, "isFinalReveal", "learningGoals"
-    FROM "CaseStage"
-    WHERE "caseId" = ${caseId}
-    ORDER BY "order" ASC
-  `;
-  const stageIds = stages.map((s) => s.id);
+  const blockStageOrders = options.blockStageOrders !== void 0 ? new Set(options.blockStageOrders) : null;
+  const stageIds = stages.filter((s) => !blockStageOrders || blockStageOrders.has(s.order)).map((s) => s.id);
   const allBlocks = stageIds.length ? await sql`
         SELECT id, "caseStageId", "order", "blockType", "rawText", "formattedContent", "imageUrl", "imageAlt"
         FROM "StageBlock"
@@ -60011,6 +60016,128 @@ function routeParam(v) {
 // server/session-routes.ts
 import { randomUUID as randomUUID2 } from "crypto";
 
+// src/lib/session-list.ts
+var sessionListSelect = `
+  SELECT
+    cs.id,
+    cs."caseId",
+    cs."studyGroupId",
+    cs."leaderUserId",
+    cs.status,
+    cs."currentStageOrder",
+    (
+      SELECT COUNT(*)::int FROM "CaseStage" st WHERE st."caseId" = c.id
+    ) AS "totalStages",
+    cs."caseVersionSnapshot",
+    cs."startedAt",
+    cs."completedAt",
+    c.title AS "caseTitle",
+    c."departmentId" AS "caseDepartmentId",
+    c.published AS "casePublished",
+    c."teacherKey" AS "caseTeacherKey",
+    sg.name AS "studyGroupName",
+    f.id AS "facultyId",
+    f.name AS "facultyName",
+    cl.id AS "courseLevelId",
+    cl.name AS "courseLevelName",
+    cl.sort AS "courseLevelSort",
+    u.name AS "leaderName",
+    u.login AS "leaderLogin",
+    o.id AS "outcomeId",
+    o."caseSessionId" AS "outcomeCaseSessionId",
+    o."aiAnalysis",
+    o."aiModel",
+    o."aiPromptVersion",
+    o."aiPreliminaryScores",
+    o."teacherGrade",
+    o."teacherComment",
+    o."finalizedAt"
+  FROM "CaseSession" cs
+  JOIN "Case" c ON c.id = cs."caseId"
+  JOIN "StudyGroup" sg ON sg.id = cs."studyGroupId"
+  JOIN "Faculty" f ON f.id = sg."facultyId"
+  JOIN "CourseLevel" cl ON cl.id = sg."courseLevelId"
+  JOIN "User" u ON u.id = cs."leaderUserId"
+  LEFT JOIN "SessionOutcome" o ON o."caseSessionId" = cs.id
+`;
+function mapSessionListRow(row) {
+  const outcome = row.outcomeId ? {
+    id: row.outcomeId,
+    caseSessionId: row.outcomeCaseSessionId ?? row.id,
+    aiAnalysis: row.aiAnalysis,
+    aiModel: row.aiModel,
+    aiPromptVersion: row.aiPromptVersion,
+    aiPreliminaryScores: row.aiPreliminaryScores,
+    teacherGrade: row.teacherGrade,
+    teacherComment: row.teacherComment,
+    finalizedAt: row.finalizedAt
+  } : null;
+  return {
+    id: row.id,
+    caseId: row.caseId,
+    studyGroupId: row.studyGroupId,
+    leaderUserId: row.leaderUserId,
+    status: row.status,
+    currentStageOrder: row.currentStageOrder,
+    totalStages: row.totalStages,
+    caseVersionSnapshot: row.caseVersionSnapshot,
+    startedAt: row.startedAt,
+    completedAt: row.completedAt,
+    case: {
+      id: row.caseId,
+      title: row.caseTitle,
+      departmentId: row.caseDepartmentId,
+      published: row.casePublished,
+      teacherKey: row.caseTeacherKey
+    },
+    studyGroup: {
+      id: row.studyGroupId,
+      name: row.studyGroupName,
+      faculty: { id: row.facultyId, name: row.facultyName },
+      courseLevel: {
+        id: row.courseLevelId,
+        name: row.courseLevelName,
+        sort: row.courseLevelSort
+      }
+    },
+    leader: {
+      id: row.leaderUserId,
+      name: row.leaderName,
+      login: row.leaderLogin
+    },
+    outcome
+  };
+}
+async function fetchSessionsList(opts) {
+  const pool = getSql();
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 100);
+  const caseId = opts.caseId;
+  let rows;
+  if (opts.role === "ADMIN") {
+    rows = await pool.unsafe(
+      `${sessionListSelect}
+       WHERE ($1::text IS NULL OR cs."caseId" = $1)
+       ORDER BY cs."startedAt" DESC
+       LIMIT $2`,
+      [caseId ?? null, limit]
+    );
+  } else if (opts.role === "TEACHER") {
+    const dept = opts.departmentId;
+    if (!dept) return [];
+    rows = await pool.unsafe(
+      `${sessionListSelect}
+       WHERE c."departmentId" = $1
+         AND ($2::text IS NULL OR cs."caseId" = $2)
+       ORDER BY cs."startedAt" DESC
+       LIMIT $3`,
+      [dept, caseId ?? null, limit]
+    );
+  } else {
+    return [];
+  }
+  return rows.map(mapSessionListRow);
+}
+
 // src/lib/reference-data.ts
 async function fetchReferenceData(opts) {
   const pool = getSql();
@@ -60061,23 +60188,23 @@ async function fetchStaffPickListForDepartment(departmentId) {
 }
 async function fetchStudyGroupsEnriched() {
   const pool = getSql();
-  const groups = await pool`SELECT id, name, "facultyId", "courseLevelId" FROM "StudyGroup" ORDER BY name ASC`;
-  return Promise.all(
-    groups.map(async (g) => {
-      const [f] = await pool`
-        SELECT id, name FROM "Faculty" WHERE id = ${g.facultyId}
-      `;
-      const [cl] = await pool`
-        SELECT id, name, sort FROM "CourseLevel" WHERE id = ${g.courseLevelId}
-      `;
-      return {
-        ...g,
-        faculty: f,
-        courseLevel: cl,
-        members: []
-      };
-    })
-  );
+  const rows = await pool`
+    SELECT g.id, g.name, g."facultyId", g."courseLevelId",
+      f.name AS "facultyName", cl.name AS "courseLevelName", cl.sort AS "courseLevelSort"
+    FROM "StudyGroup" g
+    JOIN "Faculty" f ON f.id = g."facultyId"
+    JOIN "CourseLevel" cl ON cl.id = g."courseLevelId"
+    ORDER BY g.name ASC
+  `;
+  return rows.map((g) => ({
+    id: g.id,
+    name: g.name,
+    facultyId: g.facultyId,
+    courseLevelId: g.courseLevelId,
+    faculty: { id: g.facultyId, name: g.facultyName },
+    courseLevel: { id: g.courseLevelId, name: g.courseLevelName, sort: g.courseLevelSort },
+    members: []
+  }));
 }
 
 // src/lib/session-detail.ts
@@ -60090,41 +60217,62 @@ async function loadCaseSessionDetail(sessionId) {
   `;
   const row = sessRows[0];
   if (!row) return null;
-  const caseFull = await loadCaseDetail(row.caseId);
+  const [caseFull, sgRows, leaderRows, subRows] = await Promise.all([
+    loadCaseDetail(
+      row.caseId,
+      row.status === "IN_PROGRESS" ? { blockStageOrders: [row.currentStageOrder] } : void 0
+    ),
+    pool`
+      SELECT sg.id, sg.name, sg."facultyId", sg."courseLevelId",
+        f.name AS "facultyName", cl.name AS "courseLevelName", cl.sort AS "courseLevelSort"
+      FROM "StudyGroup" sg
+      JOIN "Faculty" f ON f.id = sg."facultyId"
+      JOIN "CourseLevel" cl ON cl.id = sg."courseLevelId"
+      WHERE sg.id = ${row.studyGroupId}
+    `,
+    pool`
+      SELECT id, name, login FROM "User" WHERE id = ${row.leaderUserId}
+    `,
+    pool`
+      SELECT id, "caseSessionId", "caseStageId", "submittedAt", "openedAt"
+      FROM "StageSubmission"
+      WHERE "caseSessionId" = ${sessionId}
+    `
+  ]);
   if (!caseFull) return null;
-  const [sg] = await pool`SELECT id, name, "facultyId", "courseLevelId" FROM "StudyGroup" WHERE id = ${row.studyGroupId}`;
+  const sg = sgRows[0];
   if (!sg) return null;
-  const [faculty] = await pool`
-    SELECT id, name FROM "Faculty" WHERE id = ${sg.facultyId}
-  `;
-  const [courseLevel] = await pool`
-    SELECT id, name, sort FROM "CourseLevel" WHERE id = ${sg.courseLevelId}
-  `;
-  if (!faculty || !courseLevel) return null;
+  const faculty = { id: sg.facultyId, name: sg.facultyName };
+  const courseLevel = {
+    id: sg.courseLevelId,
+    name: sg.courseLevelName,
+    sort: sg.courseLevelSort
+  };
+  const leader = leaderRows[0];
+  if (!leader) return null;
   const pickList = await fetchStaffPickListForDepartment(caseFull.departmentId);
   const members = pickList.map((u) => ({
     userId: u.id,
     user: { id: u.id, name: u.name, login: u.login }
   }));
-  const [leader] = await pool`
-    SELECT id, name, login FROM "User" WHERE id = ${row.leaderUserId}
-  `;
-  if (!leader) return null;
-  const subRows = await pool`
-    SELECT id, "caseSessionId", "caseStageId", "submittedAt", "openedAt"
-    FROM "StageSubmission"
-    WHERE "caseSessionId" = ${sessionId}
-  `;
   let submissions = [];
+  const stageById = new Map(
+    caseFull.stages.map((s) => [
+      s.id,
+      {
+        id: s.id,
+        caseId: s.caseId,
+        order: s.order,
+        title: s.title,
+        isFinalReveal: s.isFinalReveal,
+        learningGoals: s.learningGoals
+      }
+    ])
+  );
+  let outcome;
   if (subRows.length > 0) {
     const subIds = subRows.map((s) => s.id);
-    const stageIds = subRows.map((s) => s.caseStageId);
-    const [stageRows, hypRows, qRows] = await Promise.all([
-      pool`
-        SELECT id, "caseId", "order", title, "isFinalReveal", "learningGoals"
-        FROM "CaseStage"
-        WHERE id = ANY(${pool.array(stageIds)})
-      `,
+    const [hypRows, qRows, outcomeRows] = await Promise.all([
       pool`
         SELECT id, "stageSubmissionId", text, "lineageId", sort FROM "Hypothesis"
         WHERE "stageSubmissionId" = ANY(${pool.array(subIds)})
@@ -60134,9 +60282,14 @@ async function loadCaseSessionDetail(sessionId) {
         SELECT id, "stageSubmissionId", text, "lineageId", sort FROM "StudentQuestion"
         WHERE "stageSubmissionId" = ANY(${pool.array(subIds)})
         ORDER BY sort ASC
+      `,
+      pool`
+        SELECT id, "caseSessionId", "aiAnalysis", "aiModel", "aiPromptVersion",
+          "aiPreliminaryScores", "teacherGrade", "teacherComment", "finalizedAt"
+        FROM "SessionOutcome" WHERE "caseSessionId" = ${sessionId}
       `
     ]);
-    const stageById = new Map(stageRows.map((s) => [s.id, s]));
+    outcome = outcomeRows[0];
     const hypBySubId = /* @__PURE__ */ new Map();
     for (const h of hypRows) {
       const arr = hypBySubId.get(h.stageSubmissionId) ?? [];
@@ -60159,12 +60312,14 @@ async function loadCaseSessionDetail(sessionId) {
         questions: (qBySubId.get(sub.id) ?? []).map(({ stageSubmissionId: _s, ...rest }) => rest)
       };
     });
+  } else {
+    const outcomeRows = await pool`
+      SELECT id, "caseSessionId", "aiAnalysis", "aiModel", "aiPromptVersion",
+        "aiPreliminaryScores", "teacherGrade", "teacherComment", "finalizedAt"
+      FROM "SessionOutcome" WHERE "caseSessionId" = ${sessionId}
+    `;
+    outcome = outcomeRows[0];
   }
-  const [outcome] = await pool`
-    SELECT id, "caseSessionId", "aiAnalysis", "aiModel", "aiPromptVersion",
-      "aiPreliminaryScores", "teacherGrade", "teacherComment", "finalizedAt"
-    FROM "SessionOutcome" WHERE "caseSessionId" = ${sessionId}
-  `;
   return {
     ...row,
     case: caseFull,
@@ -60176,50 +60331,6 @@ async function loadCaseSessionDetail(sessionId) {
     },
     leader,
     submissions,
-    outcome: outcome ?? null
-  };
-}
-async function loadCaseSessionBrief(sessionId) {
-  const pool = getSql();
-  const sessRows = await pool`
-    SELECT id, "caseId", "studyGroupId", "leaderUserId", status, "currentStageOrder",
-      "caseVersionSnapshot", "startedAt", "completedAt"
-    FROM "CaseSession" WHERE id = ${sessionId}
-  `;
-  const row = sessRows[0];
-  if (!row) return null;
-  const [c] = await pool`
-    SELECT id, title, "departmentId", published, "teacherKey" FROM "Case" WHERE id = ${row.caseId}
-  `;
-  if (!c) return null;
-  const [sg] = await pool`SELECT id, name, "facultyId", "courseLevelId" FROM "StudyGroup" WHERE id = ${row.studyGroupId}`;
-  if (!sg) return null;
-  const [faculty] = await pool`
-    SELECT id, name FROM "Faculty" WHERE id = ${sg.facultyId}
-  `;
-  const [courseLevel] = await pool`
-    SELECT id, name, sort FROM "CourseLevel" WHERE id = ${sg.courseLevelId}
-  `;
-  if (!faculty || !courseLevel) return null;
-  const [leader] = await pool`
-    SELECT id, name, login FROM "User" WHERE id = ${row.leaderUserId}
-  `;
-  if (!leader) return null;
-  const [outcome] = await pool`
-    SELECT id, "caseSessionId", "aiAnalysis", "aiModel", "aiPromptVersion",
-      "aiPreliminaryScores", "teacherGrade", "teacherComment", "finalizedAt"
-    FROM "SessionOutcome" WHERE "caseSessionId" = ${sessionId}
-  `;
-  return {
-    ...row,
-    case: c,
-    studyGroup: {
-      id: sg.id,
-      name: sg.name,
-      faculty,
-      courseLevel
-    },
-    leader,
     outcome: outcome ?? null
   };
 }
@@ -60240,40 +60351,6 @@ async function loadCaseSessionForPatch(sessionId) {
     leaderUserId: s.leaderUserId,
     case: c
   };
-}
-
-// src/lib/session-list.ts
-async function fetchSessionsList(opts) {
-  const pool = getSql();
-  const limit = opts.limit ?? 50;
-  const caseId = opts.caseId;
-  let idRows;
-  if (opts.role === "ADMIN") {
-    idRows = caseId ? await pool`
-          SELECT id FROM "CaseSession" WHERE "caseId" = ${caseId}
-          ORDER BY "startedAt" DESC LIMIT ${limit}
-        ` : await pool`
-          SELECT id FROM "CaseSession" ORDER BY "startedAt" DESC LIMIT ${limit}
-        `;
-  } else if (opts.role === "TEACHER") {
-    const dept = opts.departmentId;
-    if (!dept) return [];
-    idRows = caseId ? await pool`
-          SELECT cs.id FROM "CaseSession" cs
-          JOIN "Case" c ON c.id = cs."caseId"
-          WHERE c."departmentId" = ${dept} AND cs."caseId" = ${caseId}
-          ORDER BY cs."startedAt" DESC LIMIT ${limit}
-        ` : await pool`
-          SELECT cs.id FROM "CaseSession" cs
-          JOIN "Case" c ON c.id = cs."caseId"
-          WHERE c."departmentId" = ${dept}
-          ORDER BY cs."startedAt" DESC LIMIT ${limit}
-        `;
-  } else {
-    return [];
-  }
-  const sessions = (await Promise.all(idRows.map((r) => loadCaseSessionBrief(r.id)))).filter((s) => s != null);
-  return sessions;
 }
 
 // src/lib/session-outcome-scores.ts
@@ -60311,23 +60388,42 @@ async function mergeAiPreliminaryScoresFromDb(outcome) {
 
 // src/lib/session-logic.ts
 import { randomUUID } from "crypto";
+async function loadActiveSessionStage(sessionId) {
+  const pool = getSql();
+  const rows = await pool`
+    SELECT
+      cs.id,
+      cs.status,
+      cs."currentStageOrder",
+      cs."caseId",
+      st.id AS "currentStageId"
+    FROM "CaseSession" cs
+    LEFT JOIN "CaseStage" st
+      ON st."caseId" = cs."caseId"
+     AND st."order" = cs."currentStageOrder"
+    WHERE cs.id = ${sessionId}
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) throw new Error("SESSION_NOT_FOUND");
+  if (row.status !== "IN_PROGRESS") throw new Error("SESSION_CLOSED");
+  if (!row.currentStageId) throw new Error("STAGE_NOT_FOUND");
+  return {
+    session: {
+      id: row.id,
+      status: row.status,
+      currentStageOrder: row.currentStageOrder,
+      caseId: row.caseId
+    },
+    currentStageId: row.currentStageId
+  };
+}
 async function updateSessionDraft(sessionId, items) {
   const pool = getSql();
-  const sessRows = await pool`
-    SELECT id, status, "currentStageOrder", "caseId" FROM "CaseSession" WHERE id = ${sessionId}
-  `;
-  const session = sessRows[0];
-  if (!session) throw new Error("SESSION_NOT_FOUND");
-  if (session.status !== "IN_PROGRESS") throw new Error("SESSION_CLOSED");
-  const caseFull = await loadCaseDetail(session.caseId);
-  if (!caseFull) throw new Error("SESSION_NOT_FOUND");
-  const currentStage = caseFull.stages.find(
-    (s) => s.order === session.currentStageOrder
-  );
-  if (!currentStage) throw new Error("STAGE_NOT_FOUND");
+  const { session, currentStageId } = await loadActiveSessionStage(sessionId);
   const subRows = await pool`
     SELECT id, "submittedAt" FROM "StageSubmission"
-    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStage.id}
+    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStageId}
     LIMIT 1
   `;
   const submission = subRows[0];
@@ -60356,21 +60452,11 @@ async function updateSessionDraft(sessionId, items) {
 }
 async function advanceSession(sessionId) {
   const pool = getSql();
-  const sessRows = await pool`
-    SELECT id, status, "currentStageOrder", "caseId" FROM "CaseSession" WHERE id = ${sessionId}
-  `;
-  const session = sessRows[0];
-  if (!session) throw new Error("SESSION_NOT_FOUND");
-  if (session.status !== "IN_PROGRESS") throw new Error("SESSION_CLOSED");
-  const caseFull = await loadCaseDetail(session.caseId);
-  if (!caseFull) throw new Error("SESSION_NOT_FOUND");
-  const stages = caseFull.stages;
-  const currentStage = stages.find((s) => s.order === session.currentStageOrder);
-  if (!currentStage) throw new Error("STAGE_NOT_FOUND");
+  const { session, currentStageId } = await loadActiveSessionStage(sessionId);
   const now = /* @__PURE__ */ new Date();
   const subRows = await pool`
     SELECT id, "submittedAt" FROM "StageSubmission"
-    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStage.id}
+    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStageId}
     LIMIT 1
   `;
   const currentSubmission = subRows[0];
@@ -60384,8 +60470,13 @@ async function advanceSession(sessionId) {
     SELECT id, text, "lineageId", sort FROM "StudentQuestion"
     WHERE "stageSubmissionId" = ${currentSubmission.id} ORDER BY sort
   `;
-  const idx = stages.findIndex((s) => s.id === currentStage.id);
-  const nextStage = stages[idx + 1];
+  const [nextStage] = await pool`
+    SELECT id, "order"
+    FROM "CaseStage"
+    WHERE "caseId" = ${session.caseId} AND "order" > ${session.currentStageOrder}
+    ORDER BY "order" ASC
+    LIMIT 1
+  `;
   await pool`UPDATE "StageSubmission" SET "submittedAt" = ${now} WHERE id = ${currentSubmission.id}`;
   if (!nextStage) {
     await pool`
@@ -60428,22 +60519,11 @@ async function advanceSession(sessionId) {
 }
 async function forceCompleteSession(sessionId) {
   const pool = getSql();
-  const sessRows = await pool`
-    SELECT id, status, "currentStageOrder", "caseId" FROM "CaseSession" WHERE id = ${sessionId}
-  `;
-  const session = sessRows[0];
-  if (!session) throw new Error("SESSION_NOT_FOUND");
-  if (session.status !== "IN_PROGRESS") throw new Error("SESSION_CLOSED");
-  const caseFull = await loadCaseDetail(session.caseId);
-  if (!caseFull) throw new Error("SESSION_NOT_FOUND");
-  const currentStage = caseFull.stages.find(
-    (s) => s.order === session.currentStageOrder
-  );
-  if (!currentStage) throw new Error("STAGE_NOT_FOUND");
+  const { session, currentStageId } = await loadActiveSessionStage(sessionId);
   const now = /* @__PURE__ */ new Date();
   const subRows = await pool`
     SELECT id, "submittedAt" FROM "StageSubmission"
-    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStage.id}
+    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStageId}
     LIMIT 1
   `;
   const currentSubmission = subRows[0];
@@ -60466,84 +60546,19 @@ async function forceCompleteSession(sessionId) {
 }
 
 // src/lib/llm.ts
-var OPENAI_URL = "https://api.openai.com/v1/chat/completions";
-function geminiModelName() {
-  return process.env.GEMINI_MODEL ?? "gemini-2.0-flash";
-}
+var DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 function llmMaxOutputTokens() {
   const n = Number(process.env.LLM_MAX_OUTPUT_TOKENS);
   if (Number.isFinite(n) && n >= 256) return Math.min(Math.floor(n), 32768);
   return 8192;
 }
-async function geminiGenerate(messages2, jsonMode) {
-  const key2 = process.env.GEMINI_API_KEY;
+async function deepseekGenerate(messages2, jsonMode) {
+  const key2 = process.env.DEEPSEEK_API_KEY;
+  const model = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
   if (!key2) {
     return { ok: false, missingKey: true, text: "" };
   }
-  const model = geminiModelName();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-  const systemParts = messages2.filter((m) => m.role === "system").map((m) => m.content.trim()).filter(Boolean);
-  const systemInstruction = systemParts.length > 0 ? { parts: [{ text: systemParts.join("\n\n") }] } : void 0;
-  const contents = [];
-  for (const m of messages2) {
-    if (m.role === "system") continue;
-    const role = m.role === "assistant" ? "model" : "user";
-    contents.push({ role, parts: [{ text: m.content }] });
-  }
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": key2
-    },
-    body: JSON.stringify({
-      ...systemInstruction ? { systemInstruction } : {},
-      contents,
-      generationConfig: {
-        temperature: 0.3,
-        maxOutputTokens: llmMaxOutputTokens(),
-        ...jsonMode ? { responseMimeType: "application/json" } : {}
-      }
-    })
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    return {
-      ok: false,
-      missingKey: false,
-      text: "",
-      error: `Gemini error ${res.status}: ${errText}`
-    };
-  }
-  const data = await res.json();
-  if (data.error?.message) {
-    return {
-      ok: false,
-      missingKey: false,
-      text: "",
-      error: data.error.message
-    };
-  }
-  const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
-  const finishReason = data.candidates?.[0]?.finishReason;
-  if (!text && finishReason === "SAFETY") {
-    return {
-      ok: false,
-      missingKey: false,
-      text: "",
-      error: "Gemini: \u043E\u0442\u0432\u0435\u0442 \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430\u043C\u0438 \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u0438"
-    };
-  }
-  const truncated = finishReason === "MAX_TOKENS";
-  return { ok: true, text, model: `google/${model}`, truncated };
-}
-async function openaiGenerate(messages2, jsonMode) {
-  const key2 = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
-  if (!key2) {
-    return { ok: false, missingKey: true, text: "" };
-  }
-  const res = await fetch(OPENAI_URL, {
+  const res = await fetch(DEEPSEEK_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -60563,34 +60578,21 @@ async function openaiGenerate(messages2, jsonMode) {
       ok: false,
       missingKey: false,
       text: "",
-      error: `OpenAI error ${res.status}: ${errText}`
+      error: `DeepSeek error ${res.status}: ${errText}`
     };
   }
   const data = await res.json();
   const choice = data.choices?.[0];
   const text = choice?.message?.content ?? "";
   const truncated = choice?.finish_reason === "length";
-  return { ok: true, text, model, truncated };
+  return { ok: true, text, model: `deepseek/${model}`, truncated };
 }
 async function chatCompletion(messages2, jsonMode = false) {
-  const hasGemini = Boolean(process.env.GEMINI_API_KEY?.trim());
-  const hasOpenAI = Boolean(process.env.OPENAI_API_KEY?.trim());
-  if (!hasGemini && !hasOpenAI) {
+  const hasDeepseek = Boolean(process.env.DEEPSEEK_API_KEY?.trim());
+  if (!hasDeepseek) {
     return { ok: false, missingKey: true, text: "" };
   }
-  if (hasGemini) {
-    const g = await geminiGenerate(messages2, jsonMode);
-    if (g.ok || !hasOpenAI) return g;
-    const o = await openaiGenerate(messages2, jsonMode);
-    if (o.ok) return o;
-    return {
-      ok: false,
-      missingKey: false,
-      text: "",
-      error: [g.error, o.error].filter(Boolean).join(" | ")
-    };
-  }
-  return openaiGenerate(messages2, jsonMode);
+  return deepseekGenerate(messages2, jsonMode);
 }
 function heuristicFormatBlock(raw) {
   const trimmed = raw.trim();
@@ -60604,6 +60606,7 @@ function heuristicFormatBlock(raw) {
 }
 
 // src/lib/session-ai-scores.ts
+var SESSION_ANALYZE_VERSION = "session-analysis-v4";
 var aiAnalysisResponseSchema = external_exports.object({
   analysisMarkdown: external_exports.string(),
   stageScores: external_exports.array(
@@ -60734,6 +60737,110 @@ function parsePreliminaryScoresLoose(v) {
   const averageScore = Math.round(sum / stageScores.length);
   return { stageScores, averageScore };
 }
+function buildSessionAnalysisPrompt(input) {
+  const lines = [];
+  for (const st of input.stages) {
+    lines.push(`\u042D\u0442\u0430\u043F ${st.stageOrder}: ${st.stageTitle}`);
+    lines.push(
+      "\u0413\u0438\u043F\u043E\u0442\u0435\u0437\u044B: " + (st.hypotheses.length ? st.hypotheses.join(" | ") : "\u2014")
+    );
+    lines.push(
+      "\u0412\u043E\u043F\u0440\u043E\u0441\u044B: " + (st.questions.length ? st.questions.join(" | ") : "\u2014")
+    );
+    lines.push("");
+  }
+  const stageCount = input.stages.length;
+  return [
+    {
+      role: "system",
+      content: `\u0422\u044B \u043C\u0435\u0442\u043E\u0434\u0438\u0441\u0442 \u043C\u0435\u0434\u0438\u0446\u0438\u043D\u0441\u043A\u043E\u0433\u043E \u043E\u0431\u0440\u0430\u0437\u043E\u0432\u0430\u043D\u0438\u044F. \u041F\u0440\u043E\u0430\u043D\u0430\u043B\u0438\u0437\u0438\u0440\u0443\u0439 \u0445\u043E\u0434 \u0440\u0430\u0431\u043E\u0442\u044B \u043F\u043E \u043A\u043B\u0438\u043D\u0438\u0447\u0435\u0441\u043A\u043E\u043C\u0443 \u043A\u0435\u0439\u0441\u0443.
+
+\u0412 \u0442\u0435\u043A\u0441\u0442\u0435 \u0430\u043D\u0430\u043B\u0438\u0437\u0430 (analysisMarkdown) \u043F\u043E-\u043F\u0440\u0435\u0436\u043D\u0435\u043C\u0443 \u043F\u043E\u043E\u0449\u0440\u044F\u0439 \u0448\u0438\u0440\u043E\u0442\u0443 \u043F\u0440\u0435\u0434\u0432\u0430\u0440\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0445 \u0433\u0438\u043F\u043E\u0442\u0435\u0437 \u043A\u0430\u043A \u043F\u043E\u043B\u0435\u0437\u043D\u0443\u044E \u043F\u0440\u0438\u0432\u044B\u0447\u043A\u0443 \u043E\u0431\u0443\u0447\u0435\u043D\u0438\u044F \u2014 \u043D\u043E \u043D\u0435 \u0441\u043C\u044F\u0433\u0447\u0430\u0439 \u0446\u0438\u0444\u0440\u044B \u043E\u0446\u0435\u043D\u043E\u043A.
+
+\u041E\u0426\u0415\u041D\u041A\u0418 score (0\u2013100) \u2014 \u0416\u0401\u0421\u0422\u041A\u041E, \u0431\u0435\u0437 \u0441\u043D\u0438\u0441\u0445\u043E\u0436\u0434\u0435\u043D\u0438\u044F. \u041E\u0440\u0438\u0435\u043D\u0442\u0438\u0440\u044B (\u0435\u0441\u043B\u0438 \u0434\u0430\u043D\u043D\u044B\u0445 \u043C\u0430\u043B\u043E \u2014 \u0441\u0442\u0430\u0432\u044C \u043D\u0438\u0436\u043D\u044E\u044E \u0433\u0440\u0430\u043D\u0438\u0446\u0443 \u0434\u0438\u0430\u043F\u0430\u0437\u043E\u043D\u0430):
+- \u041D\u0435\u0442 \u043D\u0438 \u043E\u0434\u043D\u043E\u0439 \u043D\u0435\u043F\u0443\u0441\u0442\u043E\u0439 \u0433\u0438\u043F\u043E\u0442\u0435\u0437\u044B \u0418 \u043D\u0435\u0442 \u043D\u0438 \u043E\u0434\u043D\u043E\u0433\u043E \u043D\u0435\u043F\u0443\u0441\u0442\u043E\u0433\u043E \u0432\u043E\u043F\u0440\u043E\u0441\u0430 \u043D\u0430 \u044D\u0442\u0430\u043F\u0435 \u2192 **score = 0**. \u041D\u0435 \u043F\u0440\u0438\u0434\u0443\u043C\u044B\u0432\u0430\u0439 \xAB\u0437\u0430\u0447\u0451\u0442 \u0437\u0430 \u043D\u0430\u043C\u0435\u0440\u0435\u043D\u0438\u0435\xBB.
+- \u0422\u043E\u043B\u044C\u043A\u043E 1\u20132 \u043A\u043E\u0440\u043E\u0442\u043A\u0438\u0435 \u0433\u0438\u043F\u043E\u0442\u0435\u0437\u044B, \u0432\u043E\u043F\u0440\u043E\u0441\u043E\u0432 \u043D\u0435\u0442 \u2192 \u043E\u0431\u044B\u0447\u043D\u043E **5\u201320**, \u043D\u0435 \u0432\u044B\u0448\u0435 **25**.
+- \u0415\u0441\u0442\u044C \u0433\u0438\u043F\u043E\u0442\u0435\u0437\u044B (3+), \u043D\u043E \u0432\u043E\u043F\u0440\u043E\u0441\u043E\u0432 \u043D\u0435\u0442 \u2192 \u043E\u0431\u044B\u0447\u043D\u043E \u043D\u0435 \u0432\u044B\u0448\u0435 **35\u201345** \u0431\u0435\u0437 \u0441\u0438\u043B\u044C\u043D\u043E\u0439 \u0430\u0440\u0433\u0443\u043C\u0435\u043D\u0442\u0430\u0446\u0438\u0438 \u0432 \u0434\u0430\u043D\u043D\u044B\u0445.
+- \u041D\u0435\u0442 \u0433\u0438\u043F\u043E\u0442\u0435\u0437, \u043D\u043E \u0435\u0441\u0442\u044C \u0432\u043E\u043F\u0440\u043E\u0441\u044B \u2192 \u043E\u0431\u044B\u0447\u043D\u043E **15\u201330**.
+- \u0418 \u0433\u0438\u043F\u043E\u0442\u0435\u0437\u044B (\u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E, \u043E\u0441\u043C\u044B\u0441\u043B\u0435\u043D\u043D\u044B\u0435), \u0438 \u0432\u043E\u043F\u0440\u043E\u0441\u044B, \u043B\u043E\u0433\u0438\u043A\u0430 \u0432\u0438\u0434\u043D\u0430 \u2192 \u043C\u043E\u0436\u043D\u043E **50\u201370**.
+- **70+** \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u0440\u0438 \u0440\u0435\u0430\u043B\u044C\u043D\u043E \u043F\u043B\u043E\u0442\u043D\u043E\u0439, \u0441\u0432\u044F\u0437\u043D\u043E\u0439 \u0440\u0430\u0431\u043E\u0442\u0435 \u044D\u0442\u0430\u043F\u0430.
+- **85+** \u043F\u043E\u0447\u0442\u0438 \u043D\u0435 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0439 \u2014 \u0440\u0435\u0437\u0435\u0440\u0432 \u0434\u043B\u044F \u0432\u044B\u0434\u0430\u044E\u0449\u0435\u0439\u0441\u044F \u0440\u0430\u0431\u043E\u0442\u044B.
+
+averageScore \u2014 \u0441\u0440\u0435\u0434\u043D\u0435\u0435 \u0430\u0440\u0438\u0444\u043C\u0435\u0442\u0438\u0447\u0435\u0441\u043A\u043E\u0435 score \u043F\u043E \u044D\u0442\u0430\u043F\u0430\u043C, \u043E\u043A\u0440\u0443\u0433\u043B\u0451\u043D\u043D\u043E\u0435 \u0434\u043E \u0446\u0435\u043B\u043E\u0433\u043E.
+
+\u041F\u043E\u043B\u0435 analysisMarkdown \u2014 \u0440\u0430\u0437\u0432\u0451\u0440\u043D\u0443\u0442\u044B\u0439 \u0442\u0435\u043A\u0441\u0442 \u043D\u0430 \u0440\u0443\u0441\u0441\u043A\u043E\u043C \u0432 Markdown:
+- \u0414\u043B\u044F \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u044D\u0442\u0430\u043F\u0430 \u2014 \u0440\u0430\u0437\u0434\u0435\u043B ## \xAB\u042D\u0442\u0430\u043F N: \u2026\xBB (\u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u043A\u0430\u043A \u0432\u043E \u0432\u0445\u043E\u0434\u043D\u044B\u0445 \u0434\u0430\u043D\u043D\u044B\u0445).
+- \u0412\u043D\u0443\u0442\u0440\u0438 \u044D\u0442\u0430\u043F\u0430 \u0442\u0440\u0438 \u043F\u043E\u0434\u0440\u0430\u0437\u0434\u0435\u043B\u0430 ### \u0432 \u043F\u043E\u0440\u044F\u0434\u043A\u0435: \u041F\u043E\u043B\u043E\u0436\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0435 \u043A\u0430\u0447\u0435\u0441\u0442\u0432\u0430 | \u041E\u0442\u0440\u0438\u0446\u0430\u0442\u0435\u043B\u044C\u043D\u044B\u0435 \u043A\u0430\u0447\u0435\u0441\u0442\u0432\u0430 | \u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0430\u0446\u0438\u0438 (\u043C\u0430\u0440\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u044B\u0435 \u0441\u043F\u0438\u0441\u043A\u0438; \u0435\u0441\u043B\u0438 \u043F\u0443\u0441\u0442\u043E \u2014 \u0441\u0442\u0440\u043E\u043A\u0430 \xAB\u2014\xBB).
+- \u041D\u0430\u0437\u0432\u0430\u043D\u0438\u044F \u0433\u0438\u043F\u043E\u0442\u0435\u0437 \u0438\u0437 \u0434\u0430\u043D\u043D\u044B\u0445 \u0432\u044B\u0434\u0435\u043B\u044F\u0439 **\u0436\u0438\u0440\u043D\u044B\u043C**.
+- \u0412 \u043A\u043E\u043D\u0446\u0435 \u043E\u043F\u0446\u0438\u043E\u043D\u0430\u043B\u044C\u043D\u043E ## \u041E\u0431\u0449\u0438\u0435 \u0437\u0430\u043C\u0435\u0447\u0430\u043D\u0438\u044F \u0441 \u0442\u0435\u043C\u0438 \u0436\u0435 \u0442\u0440\u0435\u043C\u044F ###.
+- \u0412 \u0442\u0435\u043A\u0441\u0442\u0435 analysisMarkdown \u043C\u043E\u0436\u043D\u043E \u043A\u0440\u0430\u0442\u043A\u043E \u0443\u043F\u043E\u043C\u044F\u043D\u0443\u0442\u044C \u0431\u0430\u043B\u043B\u044B \u044D\u0442\u0430\u043F\u043E\u0432, \u043D\u043E \u043E\u0441\u043D\u043E\u0432\u043D\u044B\u0435 \u0447\u0438\u0441\u043B\u0430 \u0434\u043E\u043B\u0436\u043D\u044B \u0431\u044B\u0442\u044C \u0432 stageScores \u0438 averageScore.
+
+\u041E\u0442\u0432\u0435\u0442 \u0441\u0442\u0440\u043E\u0433\u043E \u043E\u0434\u0438\u043D JSON-\u043E\u0431\u044A\u0435\u043A\u0442 (\u0431\u0435\u0437 \u0442\u0435\u043A\u0441\u0442\u0430 \u0432\u043E\u043A\u0440\u0443\u0433) \u0432\u0438\u0434\u0430:
+{"analysisMarkdown":"\u2026","stageScores":[{"stageOrder":1,"stageTitle":"\u043A\u0440\u0430\u0442\u043A\u043E","score":75},\u2026],"averageScore":73}
+stageScores.length \u0434\u043E\u043B\u0436\u043D\u043E \u0431\u044B\u0442\u044C ${stageCount} (\u043F\u043E \u0447\u0438\u0441\u043B\u0443 \u044D\u0442\u0430\u043F\u043E\u0432 \u0432\u043E \u0432\u0445\u043E\u0434\u0435). stageTitle \u2014 \u043A\u043E\u0440\u043E\u0442\u043A\u0430\u044F \u043F\u043E\u0434\u043F\u0438\u0441\u044C \u044D\u0442\u0430\u043F\u0430.
+
+\u041D\u0435 \u0432\u044B\u0441\u0442\u0430\u0432\u043B\u044F\u0439 \u0438\u0442\u043E\u0433\u043E\u0432\u0443\u044E \u043E\u0446\u0435\u043D\u043A\u0443 \u0432\u043C\u0435\u0441\u0442\u043E \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u0440\u0435\u0434\u0432\u0430\u0440\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0435 \u0431\u0430\u043B\u043B\u044B \u0432 \u043F\u043E\u043B\u044F\u0445 score. \u0411\u0443\u0434\u044C \u0441\u0434\u0435\u0440\u0436\u0430\u043D \u0438 \u0442\u0440\u0435\u0431\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u043D \u043A \u0446\u0438\u0444\u0440\u0430\u043C.
+\u0412\u0435\u0440\u0441\u0438\u044F \u043F\u0440\u043E\u043C\u043F\u0442\u0430: ${SESSION_ANALYZE_VERSION}.`
+    },
+    {
+      role: "user",
+      content: `\u0414\u0430\u043D\u043D\u044B\u0435 \u043F\u043E \u044D\u0442\u0430\u043F\u0430\u043C:
+${lines.join("\n")}
+
+\u042D\u0442\u0430\u043B\u043E\u043D \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F (\u0435\u0441\u043B\u0438 \u0435\u0441\u0442\u044C): ${input.teacherKey || "\u043D\u0435 \u043F\u0440\u0435\u0434\u043E\u0441\u0442\u0430\u0432\u043B\u0435\u043D"}`
+    }
+  ];
+}
+async function runSessionAnalysis(input) {
+  const stageCount = input.stages.length;
+  const stageStats = input.stages.map((st) => ({
+    stageOrder: st.stageOrder,
+    hypothesisCount: st.hypotheses.filter((h) => h.trim().length > 0).length,
+    questionCount: st.questions.filter((q) => q.trim().length > 0).length
+  }));
+  const rawLines = input.stages.flatMap((st) => [
+    `\u042D\u0442\u0430\u043F ${st.stageOrder}: ${st.stageTitle}`,
+    "\u0413\u0438\u043F\u043E\u0442\u0435\u0437\u044B: " + (st.hypotheses.length ? st.hypotheses.join(" | ") : "\u2014"),
+    "\u0412\u043E\u043F\u0440\u043E\u0441\u044B: " + (st.questions.length ? st.questions.join(" | ") : "\u2014"),
+    ""
+  ]).join("\n");
+  const messages2 = buildSessionAnalysisPrompt(input);
+  const llm = await chatCompletion(messages2, true);
+  let analysis;
+  let model = null;
+  let scoresPayload = null;
+  if (llm.ok && llm.text) {
+    const parsed = parseAiAnalysisResponse(llm.text);
+    if (parsed.ok) {
+      analysis = parsed.data.analysisMarkdown.trim();
+      scoresPayload = normalizeScores(parsed.data);
+      if (scoresPayload.stageScores.length !== stageCount && stageCount > 0) {
+        scoresPayload = null;
+      } else {
+        scoresPayload = enforceStrictStageScores(scoresPayload, stageStats);
+      }
+    } else {
+      const loose = recoverAiAnalysisFromLooseJson(llm.text);
+      if (loose) {
+        analysis = loose.analysisMarkdown;
+        if (loose.scores && (stageCount === 0 || loose.scores.stageScores.length === stageCount)) {
+          scoresPayload = enforceStrictStageScores(loose.scores, stageStats);
+        }
+      } else {
+        analysis = llm.text.trim();
+      }
+    }
+    model = llm.model ?? null;
+  } else if (!llm.ok && llm.missingKey) {
+    analysis = "## \u041B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u0440\u0435\u0436\u0438\u043C\n\n\u041D\u0435 \u0437\u0430\u0434\u0430\u043D DEEPSEEK_API_KEY. \u041D\u0438\u0436\u0435 \u0441\u044B\u0440\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435 \u0434\u043B\u044F \u0440\u0443\u0447\u043D\u043E\u0433\u043E \u0440\u0430\u0437\u0431\u043E\u0440\u0430:\n\n" + rawLines;
+    model = "offline";
+  } else {
+    analysis = "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u043E\u0442\u0432\u0435\u0442 \u043C\u043E\u0434\u0435\u043B\u0438. \u0414\u0430\u043D\u043D\u044B\u0435 \u0441\u0435\u0441\u0441\u0438\u0438:\n\n" + rawLines;
+    model = "error";
+  }
+  analysis = unwrapAnalysisMarkdownIfJsonWrapped(analysis);
+  return { analysis, model, scoresPayload };
+}
 
 // src/lib/to-json-iso-utc.ts
 function toJsonIsoUtc(value) {
@@ -60773,7 +60880,6 @@ function serializeSessionBriefForJson(s) {
 }
 
 // server/session-routes.ts
-var SESSION_ANALYZE_VERSION = "session-analysis-v4";
 function canDriveSession(cs, session) {
   if (cs.status !== "IN_PROGRESS") return false;
   if (cs.leaderUserId === session.user.id) return true;
@@ -60810,7 +60916,8 @@ var createSessionBodySchema = external_exports.object({
   studyGroupId: external_exports.string().optional(),
   studyGroupName: external_exports.string().optional(),
   facultyId: external_exports.string().optional(),
-  courseLevelId: external_exports.string().optional()
+  courseLevelId: external_exports.string().optional(),
+  forceNew: external_exports.boolean().optional()
 }).superRefine((b2, ctx) => {
   const legacy = Boolean(b2.studyGroupId?.trim());
   const manual = Boolean(b2.studyGroupName?.trim()) && Boolean(b2.facultyId?.trim()) && Boolean(b2.courseLevelId?.trim());
@@ -60829,10 +60936,9 @@ var outcomePatchSchema = external_exports.object({
 });
 async function buildSessionPayload(cs, session) {
   if (!cs) return null;
-  const pool = getSql();
   const canEdit = canDriveSession(cs, session);
   const canEditSessionSettings = cs.status === "IN_PROGRESS" && (session.user.role === "ADMIN" || session.user.role === "TEACHER" && canManageCase(session, cs.case.departmentId) || cs.leaderUserId === session.user.id);
-  const groupMembers = cs.studyGroup.members.map((m) => ({
+  const leaderCandidates = cs.studyGroup.members.map((m) => ({
     id: m.user.id,
     name: m.user.name,
     login: m.user.login
@@ -60843,18 +60949,11 @@ async function buildSessionPayload(cs, session) {
   const currentSubmission = currentStage && cs.submissions.find(
     (sub) => sub.caseStageId === currentStage.id && !sub.submittedAt
   );
-  if (currentSubmission && !currentSubmission.openedAt) {
-    await pool`
-      UPDATE "StageSubmission" SET "openedAt" = ${/* @__PURE__ */ new Date()} WHERE id = ${currentSubmission.id}
-    `;
-    currentSubmission.openedAt = /* @__PURE__ */ new Date();
-  }
   const showTeacherKey = session.user.role === "ADMIN" || session.user.role === "TEACHER";
-  const stripCase = (c) => {
-    if (showTeacherKey) return c;
-    const { teacherKey, ...rest } = c;
-    void teacherKey;
-    return rest;
+  const caseSummary = {
+    id: cs.case.id,
+    title: cs.case.title,
+    ...showTeacherKey ? { teacherKey: cs.case.teacherKey } : {}
   };
   const completed = cs.status === "COMPLETED";
   const stagesForContent = completed ? cs.case.stages : currentStage ? [currentStage] : [];
@@ -60878,7 +60977,8 @@ async function buildSessionPayload(cs, session) {
       startedAt: toJsonIsoUtc(cs.startedAt),
       completedAt: toJsonIsoUtc(cs.completedAt),
       caseVersionSnapshot: cs.caseVersionSnapshot,
-      case: stripCase(cs.case),
+      totalStages: cs.case.stages.length,
+      case: caseSummary,
       studyGroup: {
         id: cs.studyGroup.id,
         name: cs.studyGroup.name,
@@ -60891,7 +60991,7 @@ async function buildSessionPayload(cs, session) {
         finalizedAt: toJsonIsoUtc(outcomeWithScores.finalizedAt)
       } : null
     },
-    groupMembers,
+    leaderCandidates,
     canEditSessionSettings,
     currentStage: currentStage ? { ...currentStage, blocks: currentStage.blocks } : null,
     visibleStages,
@@ -61024,6 +61124,24 @@ function registerSessionRoutes(app2) {
     }
     const firstStage = medicalCase.stages[0];
     if (!firstStage) return errorResponse(res, "\u0423 \u043A\u0435\u0439\u0441\u0430 \u043D\u0435\u0442 \u044D\u0442\u0430\u043F\u043E\u0432", 400);
+    if (!body.forceNew) {
+      const openRows = await pool`
+        SELECT id, "currentStageOrder" FROM "CaseSession"
+        WHERE "caseId" = ${medicalCase.id}
+          AND "studyGroupId" = ${studyGroupId}
+          AND status = 'IN_PROGRESS'
+        ORDER BY "currentStageOrder" DESC, "startedAt" DESC
+        LIMIT 1
+      `;
+      const open = openRows[0];
+      if (open) {
+        return res.status(409).json({
+          error: "\u0423 \u044D\u0442\u043E\u0439 \u0433\u0440\u0443\u043F\u043F\u044B \u0443\u0436\u0435 \u0438\u0434\u0451\u0442 \u0437\u0430\u043D\u044F\u0442\u0438\u0435 \u043F\u043E \u044D\u0442\u043E\u043C\u0443 \u043A\u0435\u0439\u0441\u0443",
+          existingSessionId: open.id,
+          currentStageOrder: open.currentStageOrder
+        });
+      }
+    }
     const sessionId = randomUUID2();
     const poolConn = getSql();
     await poolConn.begin(async (txn) => {
@@ -61346,100 +61464,16 @@ function registerSessionRoutes(app2) {
       const sortedSubs = [...cs.submissions].sort(
         (a2, b2) => a2.stage.order - b2.stage.order
       );
-      const lines = [];
-      for (const sub of sortedSubs) {
-        lines.push(`\u042D\u0442\u0430\u043F ${sub.stage.order}: ${sub.stage.title}`);
-        lines.push(
-          "\u0413\u0438\u043F\u043E\u0442\u0435\u0437\u044B: " + (sub.hypotheses.length ? sub.hypotheses.map((h) => h.text).join(" | ") : "\u2014")
-        );
-        lines.push(
-          "\u0412\u043E\u043F\u0440\u043E\u0441\u044B: " + (sub.questions.length ? sub.questions.map((q) => q.text).join(" | ") : "\u2014")
-        );
-        lines.push("");
-      }
       const teacherKey = session.user.role === "ADMIN" || session.user.role === "TEACHER" ? cs.case.teacherKey ?? "" : "";
-      const stageCount = sortedSubs.length;
-      const stageStats = sortedSubs.map((sub) => ({
-        stageOrder: sub.stage.order,
-        hypothesisCount: sub.hypotheses.filter((h) => h.text.trim().length > 0).length,
-        questionCount: sub.questions.filter((q) => q.text.trim().length > 0).length
-      }));
-      const llm = await chatCompletion(
-        [
-          {
-            role: "system",
-            content: `\u0422\u044B \u043C\u0435\u0442\u043E\u0434\u0438\u0441\u0442 \u043C\u0435\u0434\u0438\u0446\u0438\u043D\u0441\u043A\u043E\u0433\u043E \u043E\u0431\u0440\u0430\u0437\u043E\u0432\u0430\u043D\u0438\u044F. \u041F\u0440\u043E\u0430\u043D\u0430\u043B\u0438\u0437\u0438\u0440\u0443\u0439 \u0445\u043E\u0434 \u0440\u0430\u0431\u043E\u0442\u044B \u043F\u043E \u043A\u043B\u0438\u043D\u0438\u0447\u0435\u0441\u043A\u043E\u043C\u0443 \u043A\u0435\u0439\u0441\u0443.
-
-\u0412 \u0442\u0435\u043A\u0441\u0442\u0435 \u0430\u043D\u0430\u043B\u0438\u0437\u0430 (analysisMarkdown) \u043F\u043E-\u043F\u0440\u0435\u0436\u043D\u0435\u043C\u0443 \u043F\u043E\u043E\u0449\u0440\u044F\u0439 \u0448\u0438\u0440\u043E\u0442\u0443 \u043F\u0440\u0435\u0434\u0432\u0430\u0440\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0445 \u0433\u0438\u043F\u043E\u0442\u0435\u0437 \u043A\u0430\u043A \u043F\u043E\u043B\u0435\u0437\u043D\u0443\u044E \u043F\u0440\u0438\u0432\u044B\u0447\u043A\u0443 \u043E\u0431\u0443\u0447\u0435\u043D\u0438\u044F \u2014 \u043D\u043E \u043D\u0435 \u0441\u043C\u044F\u0433\u0447\u0430\u0439 \u0446\u0438\u0444\u0440\u044B \u043E\u0446\u0435\u043D\u043E\u043A.
-
-\u041E\u0426\u0415\u041D\u041A\u0418 score (0\u2013100) \u2014 \u0416\u0401\u0421\u0422\u041A\u041E, \u0431\u0435\u0437 \u0441\u043D\u0438\u0441\u0445\u043E\u0436\u0434\u0435\u043D\u0438\u044F. \u041E\u0440\u0438\u0435\u043D\u0442\u0438\u0440\u044B (\u0435\u0441\u043B\u0438 \u0434\u0430\u043D\u043D\u044B\u0445 \u043C\u0430\u043B\u043E \u2014 \u0441\u0442\u0430\u0432\u044C \u043D\u0438\u0436\u043D\u044E\u044E \u0433\u0440\u0430\u043D\u0438\u0446\u0443 \u0434\u0438\u0430\u043F\u0430\u0437\u043E\u043D\u0430):
-- \u041D\u0435\u0442 \u043D\u0438 \u043E\u0434\u043D\u043E\u0439 \u043D\u0435\u043F\u0443\u0441\u0442\u043E\u0439 \u0433\u0438\u043F\u043E\u0442\u0435\u0437\u044B \u0418 \u043D\u0435\u0442 \u043D\u0438 \u043E\u0434\u043D\u043E\u0433\u043E \u043D\u0435\u043F\u0443\u0441\u0442\u043E\u0433\u043E \u0432\u043E\u043F\u0440\u043E\u0441\u0430 \u043D\u0430 \u044D\u0442\u0430\u043F\u0435 \u2192 **score = 0**. \u041D\u0435 \u043F\u0440\u0438\u0434\u0443\u043C\u044B\u0432\u0430\u0439 \xAB\u0437\u0430\u0447\u0451\u0442 \u0437\u0430 \u043D\u0430\u043C\u0435\u0440\u0435\u043D\u0438\u0435\xBB.
-- \u0422\u043E\u043B\u044C\u043A\u043E 1\u20132 \u043A\u043E\u0440\u043E\u0442\u043A\u0438\u0435 \u0433\u0438\u043F\u043E\u0442\u0435\u0437\u044B, \u0432\u043E\u043F\u0440\u043E\u0441\u043E\u0432 \u043D\u0435\u0442 \u2192 \u043E\u0431\u044B\u0447\u043D\u043E **5\u201320**, \u043D\u0435 \u0432\u044B\u0448\u0435 **25**.
-- \u0415\u0441\u0442\u044C \u0433\u0438\u043F\u043E\u0442\u0435\u0437\u044B (3+), \u043D\u043E \u0432\u043E\u043F\u0440\u043E\u0441\u043E\u0432 \u043D\u0435\u0442 \u2192 \u043E\u0431\u044B\u0447\u043D\u043E \u043D\u0435 \u0432\u044B\u0448\u0435 **35\u201345** \u0431\u0435\u0437 \u0441\u0438\u043B\u044C\u043D\u043E\u0439 \u0430\u0440\u0433\u0443\u043C\u0435\u043D\u0442\u0430\u0446\u0438\u0438 \u0432 \u0434\u0430\u043D\u043D\u044B\u0445.
-- \u041D\u0435\u0442 \u0433\u0438\u043F\u043E\u0442\u0435\u0437, \u043D\u043E \u0435\u0441\u0442\u044C \u0432\u043E\u043F\u0440\u043E\u0441\u044B \u2192 \u043E\u0431\u044B\u0447\u043D\u043E **15\u201330**.
-- \u0418 \u0433\u0438\u043F\u043E\u0442\u0435\u0437\u044B (\u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E, \u043E\u0441\u043C\u044B\u0441\u043B\u0435\u043D\u043D\u044B\u0435), \u0438 \u0432\u043E\u043F\u0440\u043E\u0441\u044B, \u043B\u043E\u0433\u0438\u043A\u0430 \u0432\u0438\u0434\u043D\u0430 \u2192 \u043C\u043E\u0436\u043D\u043E **50\u201370**.
-- **70+** \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u0440\u0438 \u0440\u0435\u0430\u043B\u044C\u043D\u043E \u043F\u043B\u043E\u0442\u043D\u043E\u0439, \u0441\u0432\u044F\u0437\u043D\u043E\u0439 \u0440\u0430\u0431\u043E\u0442\u0435 \u044D\u0442\u0430\u043F\u0430.
-- **85+** \u043F\u043E\u0447\u0442\u0438 \u043D\u0435 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0439 \u2014 \u0440\u0435\u0437\u0435\u0440\u0432 \u0434\u043B\u044F \u0432\u044B\u0434\u0430\u044E\u0449\u0435\u0439\u0441\u044F \u0440\u0430\u0431\u043E\u0442\u044B.
-
-averageScore \u2014 \u0441\u0440\u0435\u0434\u043D\u0435\u0435 \u0430\u0440\u0438\u0444\u043C\u0435\u0442\u0438\u0447\u0435\u0441\u043A\u043E\u0435 score \u043F\u043E \u044D\u0442\u0430\u043F\u0430\u043C, \u043E\u043A\u0440\u0443\u0433\u043B\u0451\u043D\u043D\u043E\u0435 \u0434\u043E \u0446\u0435\u043B\u043E\u0433\u043E.
-
-\u041F\u043E\u043B\u0435 analysisMarkdown \u2014 \u0440\u0430\u0437\u0432\u0451\u0440\u043D\u0443\u0442\u044B\u0439 \u0442\u0435\u043A\u0441\u0442 \u043D\u0430 \u0440\u0443\u0441\u0441\u043A\u043E\u043C \u0432 Markdown:
-- \u0414\u043B\u044F \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u044D\u0442\u0430\u043F\u0430 \u2014 \u0440\u0430\u0437\u0434\u0435\u043B ## \xAB\u042D\u0442\u0430\u043F N: \u2026\xBB (\u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u043A\u0430\u043A \u0432\u043E \u0432\u0445\u043E\u0434\u043D\u044B\u0445 \u0434\u0430\u043D\u043D\u044B\u0445).
-- \u0412\u043D\u0443\u0442\u0440\u0438 \u044D\u0442\u0430\u043F\u0430 \u0442\u0440\u0438 \u043F\u043E\u0434\u0440\u0430\u0437\u0434\u0435\u043B\u0430 ### \u0432 \u043F\u043E\u0440\u044F\u0434\u043A\u0435: \u041F\u043E\u043B\u043E\u0436\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0435 \u043A\u0430\u0447\u0435\u0441\u0442\u0432\u0430 | \u041E\u0442\u0440\u0438\u0446\u0430\u0442\u0435\u043B\u044C\u043D\u044B\u0435 \u043A\u0430\u0447\u0435\u0441\u0442\u0432\u0430 | \u0420\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0430\u0446\u0438\u0438 (\u043C\u0430\u0440\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043D\u044B\u0435 \u0441\u043F\u0438\u0441\u043A\u0438; \u0435\u0441\u043B\u0438 \u043F\u0443\u0441\u0442\u043E \u2014 \u0441\u0442\u0440\u043E\u043A\u0430 \xAB\u2014\xBB).
-- \u041D\u0430\u0437\u0432\u0430\u043D\u0438\u044F \u0433\u0438\u043F\u043E\u0442\u0435\u0437 \u0438\u0437 \u0434\u0430\u043D\u043D\u044B\u0445 \u0432\u044B\u0434\u0435\u043B\u044F\u0439 **\u0436\u0438\u0440\u043D\u044B\u043C**.
-- \u0412 \u043A\u043E\u043D\u0446\u0435 \u043E\u043F\u0446\u0438\u043E\u043D\u0430\u043B\u044C\u043D\u043E ## \u041E\u0431\u0449\u0438\u0435 \u0437\u0430\u043C\u0435\u0447\u0430\u043D\u0438\u044F \u0441 \u0442\u0435\u043C\u0438 \u0436\u0435 \u0442\u0440\u0435\u043C\u044F ###.
-- \u0412 \u0442\u0435\u043A\u0441\u0442\u0435 analysisMarkdown \u043C\u043E\u0436\u043D\u043E \u043A\u0440\u0430\u0442\u043A\u043E \u0443\u043F\u043E\u043C\u044F\u043D\u0443\u0442\u044C \u0431\u0430\u043B\u043B\u044B \u044D\u0442\u0430\u043F\u043E\u0432, \u043D\u043E \u043E\u0441\u043D\u043E\u0432\u043D\u044B\u0435 \u0447\u0438\u0441\u043B\u0430 \u0434\u043E\u043B\u0436\u043D\u044B \u0431\u044B\u0442\u044C \u0432 stageScores \u0438 averageScore.
-
-\u041E\u0442\u0432\u0435\u0442 \u0441\u0442\u0440\u043E\u0433\u043E \u043E\u0434\u0438\u043D JSON-\u043E\u0431\u044A\u0435\u043A\u0442 (\u0431\u0435\u0437 \u0442\u0435\u043A\u0441\u0442\u0430 \u0432\u043E\u043A\u0440\u0443\u0433) \u0432\u0438\u0434\u0430:
-{"analysisMarkdown":"\u2026","stageScores":[{"stageOrder":1,"stageTitle":"\u043A\u0440\u0430\u0442\u043A\u043E","score":75},\u2026],"averageScore":73}
-stageScores.length \u0434\u043E\u043B\u0436\u043D\u043E \u0431\u044B\u0442\u044C ${stageCount} (\u043F\u043E \u0447\u0438\u0441\u043B\u0443 \u044D\u0442\u0430\u043F\u043E\u0432 \u0432\u043E \u0432\u0445\u043E\u0434\u0435). stageTitle \u2014 \u043A\u043E\u0440\u043E\u0442\u043A\u0430\u044F \u043F\u043E\u0434\u043F\u0438\u0441\u044C \u044D\u0442\u0430\u043F\u0430.
-
-\u041D\u0435 \u0432\u044B\u0441\u0442\u0430\u0432\u043B\u044F\u0439 \u0438\u0442\u043E\u0433\u043E\u0432\u0443\u044E \u043E\u0446\u0435\u043D\u043A\u0443 \u0432\u043C\u0435\u0441\u0442\u043E \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u0440\u0435\u0434\u0432\u0430\u0440\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0435 \u0431\u0430\u043B\u043B\u044B \u0432 \u043F\u043E\u043B\u044F\u0445 score. \u0411\u0443\u0434\u044C \u0441\u0434\u0435\u0440\u0436\u0430\u043D \u0438 \u0442\u0440\u0435\u0431\u043E\u0432\u0430\u0442\u0435\u043B\u0435\u043D \u043A \u0446\u0438\u0444\u0440\u0430\u043C.
-\u0412\u0435\u0440\u0441\u0438\u044F \u043F\u0440\u043E\u043C\u043F\u0442\u0430: ${SESSION_ANALYZE_VERSION}.`
-          },
-          {
-            role: "user",
-            content: `\u0414\u0430\u043D\u043D\u044B\u0435 \u043F\u043E \u044D\u0442\u0430\u043F\u0430\u043C:
-${lines.join("\n")}
-
-\u042D\u0442\u0430\u043B\u043E\u043D \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F (\u0435\u0441\u043B\u0438 \u0435\u0441\u0442\u044C): ${teacherKey || "\u043D\u0435 \u043F\u0440\u0435\u0434\u043E\u0441\u0442\u0430\u0432\u043B\u0435\u043D"}`
-          }
-        ],
-        true
-      );
-      let analysis;
-      let model = null;
-      let scoresPayload = null;
-      if (llm.ok && llm.text) {
-        const parsed = parseAiAnalysisResponse(llm.text);
-        if (parsed.ok) {
-          analysis = parsed.data.analysisMarkdown.trim();
-          scoresPayload = normalizeScores(parsed.data);
-          if (scoresPayload.stageScores.length !== stageCount && stageCount > 0) {
-            scoresPayload = null;
-          } else if (scoresPayload !== null) {
-            scoresPayload = enforceStrictStageScores(scoresPayload, stageStats);
-          }
-        } else {
-          const loose = recoverAiAnalysisFromLooseJson(llm.text);
-          if (loose) {
-            analysis = loose.analysisMarkdown;
-            if (loose.scores && (stageCount === 0 || loose.scores.stageScores.length === stageCount)) {
-              scoresPayload = enforceStrictStageScores(loose.scores, stageStats);
-            }
-          } else {
-            analysis = llm.text.trim();
-          }
-        }
-        model = llm.model ?? null;
-      } else if (!llm.ok && llm.missingKey) {
-        analysis = "## \u041B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u0440\u0435\u0436\u0438\u043C\n\n\u041D\u0435 \u0437\u0430\u0434\u0430\u043D\u044B GEMINI_API_KEY \u0438 OPENAI_API_KEY. \u041D\u0438\u0436\u0435 \u0441\u044B\u0440\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435 \u0434\u043B\u044F \u0440\u0443\u0447\u043D\u043E\u0433\u043E \u0440\u0430\u0437\u0431\u043E\u0440\u0430:\n\n" + lines.join("\n");
-        model = "offline";
-      } else {
-        analysis = "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u043E\u0442\u0432\u0435\u0442 \u043C\u043E\u0434\u0435\u043B\u0438. \u0414\u0430\u043D\u043D\u044B\u0435 \u0441\u0435\u0441\u0441\u0438\u0438:\n\n" + lines.join("\n");
-        model = "error";
-      }
-      analysis = unwrapAnalysisMarkdownIfJsonWrapped(analysis);
+      const { analysis, model, scoresPayload } = await runSessionAnalysis({
+        stages: sortedSubs.map((sub) => ({
+          stageOrder: sub.stage.order,
+          stageTitle: sub.stage.title,
+          hypotheses: sub.hypotheses.map((h) => h.text),
+          questions: sub.questions.map((q) => q.text)
+        })),
+        teacherKey
+      });
       const pool = getSql();
       const scoresParam = scoresPayload !== null ? pool.json(scoresPayload) : null;
       await pool`
@@ -61628,7 +61662,7 @@ async function computeFormattedBlock(raw, block) {
     }
   } else {
     const h = heuristicFormatBlock(raw);
-    hint = !llm.ok ? llm.missingKey ? "GEMINI_API_KEY \u0438\u043B\u0438 OPENAI_API_KEY \u043D\u0435 \u0437\u0430\u0434\u0430\u043D" : llm.error ?? "" : "";
+    hint = !llm.ok ? llm.missingKey ? "DEEPSEEK_API_KEY \u043D\u0435 \u0437\u0430\u0434\u0430\u043D" : llm.error ?? "" : "";
     const html = sanitizeCaseFormattedHtml(h.html);
     formattedContent = JSON.stringify({
       html,
@@ -62429,13 +62463,13 @@ function authErrorMessage(err) {
   if (!(err instanceof Error)) return "\u041E\u0448\u0438\u0431\u043A\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0430";
   const m = err.message;
   if (m.includes("DATABASE_URL")) {
-    return "\u0421\u0435\u0440\u0432\u0435\u0440: \u0432 .env \u043D\u0435 \u0437\u0430\u0434\u0430\u043D DATABASE_URL (\u0441\u0442\u0440\u043E\u043A\u0430 Postgres \u0438\u0437 Supabase).";
+    return "\u0421\u0435\u0440\u0432\u0435\u0440: \u0432 .env \u043D\u0435 \u0437\u0430\u0434\u0430\u043D DATABASE_URL (\u0441\u0442\u0440\u043E\u043A\u0430 Postgres \u0438\u0437 Neon).";
   }
   if (m.includes("AUTH_SECRET")) {
     return "\u0421\u0435\u0440\u0432\u0435\u0440: \u0432 .env \u043D\u0435 \u0437\u0430\u0434\u0430\u043D AUTH_SECRET (\u0441\u043B\u0443\u0447\u0430\u0439\u043D\u0430\u044F \u0434\u043B\u0438\u043D\u043D\u0430\u044F \u0441\u0442\u0440\u043E\u043A\u0430).";
   }
   if (/getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|no address/i.test(m)) {
-    return "\u041D\u0435 \u0443\u0434\u0430\u0451\u0442\u0441\u044F \u0434\u043E\u0441\u0442\u0443\u0447\u0430\u0442\u044C\u0441\u044F \u0434\u043E Postgres (DNS/\u0441\u0435\u0442\u044C). \u0423 \u0445\u043E\u0441\u0442\u0430 db.*.supabase.co \u0447\u0430\u0441\u0442\u043E \u0442\u043E\u043B\u044C\u043A\u043E IPv6 \u2014 \u043D\u0430 Windows \u0431\u0435\u0437 IPv6 \u0431\u044B\u0432\u0430\u0435\u0442 \u043E\u0448\u0438\u0431\u043A\u0430 \u0432\u0440\u043E\u0434\u0435 getaddrinfo ENOENT. \u0412\u043E\u0437\u044C\u043C\u0438 \u0432 Supabase: Project Settings \u2192 Database \u2192 Connection string \u2192 \u0440\u0435\u0436\u0438\u043C \xABSession pooler\xBB \u0438\u043B\u0438 \xABTransaction\xBB (\u043F\u043E\u0440\u0442 6543, \u0434\u0440\u0443\u0433\u043E\u0439 \u0445\u043E\u0441\u0442 pooler), \u043F\u043E\u0434\u0441\u0442\u0430\u0432\u044C \u043F\u0430\u0440\u043E\u043B\u044C \u0438 \u0432\u0441\u0442\u0430\u0432\u044C URI \u0432 DATABASE_URL.";
+    return "\u041D\u0435 \u0443\u0434\u0430\u0451\u0442\u0441\u044F \u0434\u043E\u0441\u0442\u0443\u0447\u0430\u0442\u044C\u0441\u044F \u0434\u043E Postgres (DNS/\u0441\u0435\u0442\u044C). \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 DATABASE_URL \u0432 Neon Dashboard \u2192 Connection string (pooled).";
   }
   if (process.env.NODE_ENV !== "production") {
     return m;
@@ -62988,7 +63022,7 @@ function createApiApp(options) {
           ok: false,
           db: false,
           error: msg,
-          hint: /getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT/i.test(msg) ? "DATABASE_URL \u043D\u0435 \u043C\u043E\u0436\u0435\u0442 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C\u0441\u044F. \u0418\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0439\u0442\u0435 pooler \u0441\u0442\u0440\u043E\u043A\u0443 \u0438\u0437 Supabase (\u043F\u043E\u0440\u0442 6543)." : /DATABASE_URL/i.test(msg) ? "\u041F\u0435\u0440\u0435\u043C\u0435\u043D\u043D\u0430\u044F DATABASE_URL \u043D\u0435 \u0437\u0430\u0434\u0430\u043D\u0430 \u0432 Vercel Environment Variables." : void 0
+          hint: /getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT/i.test(msg) ? "DATABASE_URL \u043D\u0435 \u043C\u043E\u0436\u0435\u0442 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C\u0441\u044F. \u0418\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0439\u0442\u0435 pooled-\u0441\u0442\u0440\u043E\u043A\u0443 \u0438\u0437 Neon Dashboard." : /DATABASE_URL/i.test(msg) ? "\u041F\u0435\u0440\u0435\u043C\u0435\u043D\u043D\u0430\u044F DATABASE_URL \u043D\u0435 \u0437\u0430\u0434\u0430\u043D\u0430 \u0432 Vercel Environment Variables." : void 0
         });
       }
     })();

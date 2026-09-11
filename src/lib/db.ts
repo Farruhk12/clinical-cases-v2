@@ -15,7 +15,7 @@ export function asTransactionSql<S extends postgres.Sql>(
   return txn as unknown as S;
 }
 
-/** Прямое подключение к Postgres Supabase (строка из Dashboard → Database → URI). */
+/** Подключение к Postgres Neon (pooled URI из Dashboard → Connection string). */
 export function getSql() {
   const url = process.env.DATABASE_URL;
   if (!url) {

@@ -4,7 +4,10 @@ import type { BlockType } from "../types/db";
 
 export type { CaseDetail };
 
-export async function loadCaseDetail(caseId: string): Promise<CaseDetail | null> {
+export async function loadCaseDetail(
+  caseId: string,
+  options: { blockStageOrders?: number[] } = {},
+): Promise<CaseDetail | null> {
   const sql = getSql();
   const caseRows = await sql<
     {
@@ -20,55 +23,54 @@ export async function loadCaseDetail(caseId: string): Promise<CaseDetail | null>
   const c = caseRows[0];
   if (!c) return null;
 
-  const deptRows = await sql<{ id: string; name: string }[]>`
-    SELECT id, name FROM "Department" WHERE id = ${c.departmentId}
-  `;
+  const [deptRows, caseFaculties, caseCourseLevels, stages] = await Promise.all([
+    sql<{ id: string; name: string }[]>`
+      SELECT id, name FROM "Department" WHERE id = ${c.departmentId}
+    `,
+    sql<
+      {
+        caseId: string;
+        facultyId: string;
+        faculty: { id: string; name: string };
+      }[]
+    >`
+      SELECT cf."caseId", cf."facultyId",
+        json_build_object('id', f.id, 'name', f.name) as faculty
+      FROM "CaseFaculty" cf
+      JOIN "Faculty" f ON f.id = cf."facultyId"
+      WHERE cf."caseId" = ${caseId}
+    `,
+    sql<
+      {
+        caseId: string;
+        courseLevelId: string;
+        courseLevel: { id: string; name: string; sort: number };
+      }[]
+    >`
+      SELECT ccl."caseId", ccl."courseLevelId",
+        json_build_object('id', cl.id, 'name', cl.name, 'sort', cl.sort) as "courseLevel"
+      FROM "CaseCourseLevel" ccl
+      JOIN "CourseLevel" cl ON cl.id = ccl."courseLevelId"
+      WHERE ccl."caseId" = ${caseId}
+    `,
+    sql<
+      {
+        id: string;
+        caseId: string;
+        order: number;
+        title: string;
+        isFinalReveal: boolean;
+        learningGoals: string | null;
+      }[]
+    >`
+      SELECT id, "caseId", "order", title, "isFinalReveal", "learningGoals"
+      FROM "CaseStage"
+      WHERE "caseId" = ${caseId}
+      ORDER BY "order" ASC
+    `,
+  ]);
   const department = deptRows[0];
   if (!department) return null;
-
-  const caseFaculties = await sql<
-    {
-      caseId: string;
-      facultyId: string;
-      faculty: { id: string; name: string };
-    }[]
-  >`
-    SELECT cf."caseId", cf."facultyId",
-      json_build_object('id', f.id, 'name', f.name) as faculty
-    FROM "CaseFaculty" cf
-    JOIN "Faculty" f ON f.id = cf."facultyId"
-    WHERE cf."caseId" = ${caseId}
-  `;
-
-  const caseCourseLevels = await sql<
-    {
-      caseId: string;
-      courseLevelId: string;
-      courseLevel: { id: string; name: string; sort: number };
-    }[]
-  >`
-    SELECT ccl."caseId", ccl."courseLevelId",
-      json_build_object('id', cl.id, 'name', cl.name, 'sort', cl.sort) as "courseLevel"
-    FROM "CaseCourseLevel" ccl
-    JOIN "CourseLevel" cl ON cl.id = ccl."courseLevelId"
-    WHERE ccl."caseId" = ${caseId}
-  `;
-
-  const stages = await sql<
-    {
-      id: string;
-      caseId: string;
-      order: number;
-      title: string;
-      isFinalReveal: boolean;
-      learningGoals: string | null;
-    }[]
-  >`
-    SELECT id, "caseId", "order", title, "isFinalReveal", "learningGoals"
-    FROM "CaseStage"
-    WHERE "caseId" = ${caseId}
-    ORDER BY "order" ASC
-  `;
 
   type BlockRow = {
     id: string;
@@ -80,7 +82,13 @@ export async function loadCaseDetail(caseId: string): Promise<CaseDetail | null>
     imageUrl: string | null;
     imageAlt: string | null;
   };
-  const stageIds = stages.map((s) => s.id);
+  const blockStageOrders =
+    options.blockStageOrders !== undefined
+      ? new Set(options.blockStageOrders)
+      : null;
+  const stageIds = stages
+    .filter((s) => !blockStageOrders || blockStageOrders.has(s.order))
+    .map((s) => s.id);
   const allBlocks: BlockRow[] = stageIds.length
     ? await sql<BlockRow[]>`
         SELECT id, "caseStageId", "order", "blockType", "rawText", "formattedContent", "imageUrl", "imageAlt"

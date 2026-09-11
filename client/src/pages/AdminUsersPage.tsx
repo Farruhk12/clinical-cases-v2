@@ -2,6 +2,8 @@ import { Navigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/auth-context";
 import { apiFetch } from "@/lib/api-fetch";
+import { PageLoader } from "@/components/PageLoader";
+import { LoadingOverlay } from "@/components/LoadingOverlay";
 
 type UserRow = {
   id: string;
@@ -15,8 +17,8 @@ type UserRow = {
 type Dept = { id: string; name: string };
 
 const roleBadge: Record<string, string> = {
-  ADMIN: "bg-violet-100 text-violet-700",
-  TEACHER: "bg-sky-100 text-sky-700",
+  ADMIN: "bg-brand-50 text-brand-800",
+  TEACHER: "bg-surface text-ink-soft",
 };
 const roleLabel: Record<string, string> = {
   ADMIN: "Админ",
@@ -35,8 +37,7 @@ const emptyForm = {
   departmentId: "",
 };
 
-const inputClass =
-  "w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-brand-300 focus:ring-2 focus:ring-brand-200/50";
+const inputClass = "ui-input";
 
 export function AdminUsersPage() {
   const { user } = useAuth();
@@ -50,6 +51,7 @@ export function AdminUsersPage() {
   const [form, setForm] = useState(emptyForm);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -87,12 +89,10 @@ export function AdminUsersPage() {
 
   if (!user) return null;
   if (user.role !== "ADMIN") return <Navigate to="/dashboard" replace />;
-  if (loading) return <p className="text-slate-500">Загрузка...</p>;
+  if (loading) return <PageLoader />;
   if (error)
     return (
-      <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-        {error}
-      </p>
+      <p className="ui-alert-danger">{error}</p>
     );
 
   const openCreate = () => {
@@ -158,6 +158,7 @@ export function AdminUsersPage() {
 
   const handleDelete = async (u: UserRow) => {
     if (!window.confirm(`Удалить пользователя ${u.login}?`)) return;
+    setDeleting(true);
     try {
       const res = await apiFetch(`/api/admin/users/${u.id}`, {
         method: "DELETE",
@@ -170,20 +171,16 @@ export function AdminUsersPage() {
       await load();
     } catch {
       alert("Ошибка сети");
+    } finally {
+      setDeleting(false);
     }
   };
 
   return (
     <div className="space-y-8">
-      <div className="flex items-center justify-between">
-        <h1 className="font-display text-3xl font-bold tracking-tight text-slate-900">
-          Пользователи
-        </h1>
-        <button
-          type="button"
-          onClick={openCreate}
-          className="rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700"
-        >
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="ui-title">Пользователи</h1>
+        <button type="button" onClick={openCreate} className="ui-btn-primary">
           Создать пользователя
         </button>
       </div>
@@ -191,9 +188,9 @@ export function AdminUsersPage() {
       {showForm && (
         <form
           onSubmit={handleSubmit}
-          className="rounded-2xl border border-white/80 bg-white/90 p-6 shadow-card backdrop-blur-sm space-y-5"
+          className="ui-card space-y-5 p-6"
         >
-          <h2 className="font-display text-lg font-semibold text-slate-900">
+          <h2 className="text-lg font-semibold tracking-tight text-ink">
             {editingId ? "Редактирование" : "Новый пользователь"}
           </h2>
 
@@ -268,23 +265,21 @@ export function AdminUsersPage() {
           </div>
 
           {formError && (
-            <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
-              {formError}
-            </p>
+            <p className="ui-alert-danger">{formError}</p>
           )}
 
           <div className="flex gap-3">
             <button
               type="submit"
               disabled={saving}
-              className="rounded-xl bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-60"
+              className="ui-btn-primary"
             >
-              {saving ? "Сохранение..." : editingId ? "Сохранить" : "Создать"}
+              {editingId ? "Сохранить" : "Создать"}
             </button>
             <button
               type="button"
               onClick={() => setShowForm(false)}
-              className="rounded-xl border border-slate-200 px-5 py-2.5 text-sm text-slate-600 transition hover:bg-slate-50"
+              className="ui-btn-secondary"
             >
               Отмена
             </button>
@@ -293,15 +288,13 @@ export function AdminUsersPage() {
       )}
 
       {users.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-slate-200 py-16 text-center">
-          <p className="text-slate-400">Нет пользователей</p>
-        </div>
+        <div className="ui-empty">Нет пользователей</div>
       ) : (
         <ul className="space-y-2">
           {users.map((u) => (
             <li
               key={u.id}
-              className="flex items-center justify-between rounded-2xl border border-white/80 bg-white/90 px-5 py-4 shadow-card backdrop-blur-sm transition hover:border-brand-200/60"
+              className="ui-card-hover flex items-center justify-between px-5 py-4"
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -309,7 +302,7 @@ export function AdminUsersPage() {
                     {u.name || "Без имени"}
                   </span>
                   <span
-                    className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${roleBadge[u.role] ?? "bg-slate-100 text-slate-700"}`}
+                    className={`ui-badge ${roleBadge[u.role] ?? "bg-surface text-ink-soft"}`}
                   >
                     {roleLabel[u.role] ?? u.role}
                   </span>
@@ -323,7 +316,7 @@ export function AdminUsersPage() {
                 <button
                   type="button"
                   onClick={() => openEdit(u)}
-                  className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm text-slate-600 transition hover:bg-slate-50"
+                  className="ui-btn-secondary px-3 py-1.5"
                 >
                   Изменить
                 </button>
@@ -331,7 +324,7 @@ export function AdminUsersPage() {
                   <button
                     type="button"
                     onClick={() => handleDelete(u)}
-                    className="rounded-xl border border-red-200 px-3 py-1.5 text-sm text-red-600 transition hover:bg-red-50"
+                    className="ui-btn-danger px-3 py-1.5"
                   >
                     Удалить
                   </button>
@@ -340,6 +333,10 @@ export function AdminUsersPage() {
             </li>
           ))}
         </ul>
+      )}
+
+      {(saving || deleting) && (
+        <LoadingOverlay label={saving ? "Сохраняем пользователя…" : "Удаляем пользователя…"} />
       )}
     </div>
   );

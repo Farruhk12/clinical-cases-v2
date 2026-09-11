@@ -139,7 +139,7 @@ export async function computeFormattedBlock(
     const h = heuristicFormatBlock(raw);
     hint = !llm.ok
       ? llm.missingKey
-        ? "GEMINI_API_KEY или OPENAI_API_KEY не задан"
+        ? "DEEPSEEK_API_KEY не задан"
         : (llm.error ?? "")
       : "";
     const html = sanitizeCaseFormattedHtml(h.html);

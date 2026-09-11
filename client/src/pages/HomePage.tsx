@@ -1,14 +1,15 @@
 import { Link, Navigate } from "react-router-dom";
 import { useAuth } from "@/auth-context";
 import { PageLoader } from "@/components/PageLoader";
-import { IconBook, IconClipboard, IconStethoscope } from "@/components/icons";
+import { BrandMark } from "@/components/BrandMark";
+import { IconBook, IconClipboard } from "@/components/icons";
 
 export function HomePage() {
   const { user, loading } = useAuth();
 
   if (loading) {
     return (
-      <main className="flex flex-1 flex-col">
+      <main id="main" className="flex flex-1 flex-col">
         <PageLoader />
       </main>
     );
@@ -19,59 +20,73 @@ export function HomePage() {
   }
 
   return (
-    <main className="relative flex flex-1 flex-col justify-center px-4 py-16 sm:py-24">
-      <div className="mx-auto grid max-w-5xl gap-12 lg:grid-cols-[1fr_1.05fr] lg:items-center lg:gap-16">
+    <main id="main" className="relative flex flex-1 flex-col">
+      <header className="isolate border-b border-line bg-white">
+        <div className="safe-area-x mx-auto flex w-full max-w-6xl items-center justify-between py-4">
+          <div className="flex items-center gap-2.5 font-semibold tracking-tight text-ink">
+            <BrandMark className="h-10 w-10" />
+            Клинические кейсы
+          </div>
+          <Link to="/login" className="ui-btn-primary">
+            Войти
+          </Link>
+        </div>
+      </header>
+
+      <section className="safe-area-x mx-auto grid w-full max-w-6xl flex-1 items-center gap-12 py-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] lg:gap-20 lg:py-16">
         <div className="motion-safe:animate-fade-up">
-          <p className="mb-4 inline-flex items-center gap-2 rounded-full bg-white/70 px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-brand-700 shadow-sm backdrop-blur-sm">
-            <IconStethoscope className="h-4 w-4" />
-            Клиническое образование
-          </p>
-          <h1 className="font-display text-[1.75rem] font-semibold leading-tight tracking-tight text-slate-900 sm:text-4xl md:text-5xl">
-            Платформа{" "}
-            <span className="text-gradient-brand">клинических кейсов</span>
+          <p className="ui-kicker mb-5">Для преподавателей медицины</p>
+          <h1 className="max-w-[16ch] font-display text-[2.15rem] font-medium leading-[1.08] tracking-tight text-ink sm:text-5xl lg:text-[3.4rem]">
+            Разбор клинических кейсов. Этапами, в группе.
           </h1>
-          <p className="mt-6 max-w-xl text-lg leading-relaxed text-slate-600">
-            Создавайте сценарии, ведите групповые сессии и отслеживайте этапы
-            обучения — в одной спокойной, понятной среде для преподавателей.
+          <p className="mt-6 max-w-[42ch] text-base leading-relaxed text-ink-soft sm:text-lg">
+            Собирайте сценарии, ведите занятия и смотрите, как группа проходит
+            этапы: гипотезы, вопросы, итоговый анализ.
           </p>
-          <div className="mt-10 flex flex-wrap items-center gap-4">
-            <Link
-              to="/login"
-              className="inline-flex items-center justify-center rounded-2xl bg-gradient-to-r from-brand-600 to-brand-500 px-8 py-3.5 text-sm font-semibold text-white shadow-soft transition hover:from-brand-700 hover:to-brand-600 motion-safe:active:scale-[0.98]"
-            >
+          <div className="mt-9">
+            <Link to="/login" className="ui-btn-primary px-6 py-3">
               Войти в систему
             </Link>
           </div>
         </div>
 
-        <div className="relative motion-safe:animate-fade-up motion-safe:delay-150">
-          <div className="absolute inset-0 rounded-[2rem] bg-gradient-to-br from-brand-200/40 via-mist-100/80 to-white/40 blur-2xl" aria-hidden />
-          <div className="relative grid gap-4 sm:grid-cols-2">
-            <div className="rounded-2xl border border-white/70 bg-white/80 p-6 shadow-card backdrop-blur-md transition hover:-translate-y-0.5 hover:shadow-soft motion-safe:duration-300">
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-brand-100 text-brand-600">
-                <IconBook className="h-6 w-6" />
-              </div>
-              <h2 className="font-display text-lg font-semibold text-slate-900">
-                Кейсы и этапы
-              </h2>
-              <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                Структурируйте материал: блоки, эталоны для ИИ, роли в диалоге.
-              </p>
+        <div className="grid gap-3 motion-safe:animate-fade-up motion-safe:[animation-delay:80ms]">
+          <article className="ui-card p-6 sm:p-7">
+            <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-[10px] bg-brand-50 text-brand-700">
+              <IconBook className="h-5 w-5" />
             </div>
-            <div className="rounded-2xl border border-white/70 bg-white/80 p-6 shadow-card backdrop-blur-md transition hover:-translate-y-0.5 hover:shadow-soft motion-safe:duration-300 sm:mt-8">
-              <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-mist-100 text-brand-600">
-                <IconClipboard className="h-6 w-6" />
+            <h2 className="text-lg font-semibold tracking-tight text-ink">
+              Кейсы и этапы
+            </h2>
+            <p className="mt-2 max-w-[36ch] text-sm leading-relaxed text-ink-soft">
+              Блоки, эталон для ИИ и роли в диалоге. Материал держится в одной
+              структуре.
+            </p>
+          </article>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <article className="ui-card p-5">
+              <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-[10px] bg-surface text-brand-700">
+                <IconClipboard className="h-5 w-5" />
               </div>
-              <h2 className="font-display text-lg font-semibold text-slate-900">
-                Сессии групп
-              </h2>
-              <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                Запуск прохождения, гипотезы по этапам и итоговая аналитика.
+              <h2 className="font-semibold tracking-tight text-ink">Занятия</h2>
+              <p className="mt-1.5 text-sm leading-relaxed text-ink-soft">
+                Запуск группы, гипотезы по этапам, итог.
               </p>
-            </div>
+            </article>
+            <article className="ui-card bg-brand p-5 text-[var(--color-on-action)]">
+              <p className="text-xs font-medium uppercase tracking-[0.12em] text-white/55">
+                Аналитика
+              </p>
+              <p className="mt-3 font-display text-3xl font-medium tracking-tight">
+                По кафедрам
+              </p>
+              <p className="mt-2 text-sm leading-relaxed text-white/70">
+                Занятия, группы и оценки в одном срезе.
+              </p>
+            </article>
           </div>
         </div>
-      </div>
+      </section>
     </main>
   );
 }

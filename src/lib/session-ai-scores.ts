@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { chatCompletion, type ChatMessage, type ChatUsage } from "./llm";
+
+export const SESSION_ANALYZE_VERSION = "session-analysis-v4";
 
 export const aiAnalysisResponseSchema = z.object({
   analysisMarkdown: z.string(),
@@ -209,4 +212,145 @@ export function parsePreliminaryScoresLoose(
   const sum = stageScores.reduce((s, x) => s + x.score, 0);
   const averageScore = Math.round(sum / stageScores.length);
   return { stageScores, averageScore };
+}
+
+export type SessionAnalysisStageInput = {
+  stageOrder: number;
+  stageTitle: string;
+  hypotheses: string[];
+  questions: string[];
+};
+
+/** Сборка промпта для ИИ-разбора занятия — отдельно от HTTP-роута, чтобы промпт можно было версионировать и тестировать независимо. */
+export function buildSessionAnalysisPrompt(input: {
+  stages: SessionAnalysisStageInput[];
+  teacherKey: string;
+}): ChatMessage[] {
+  const lines: string[] = [];
+  for (const st of input.stages) {
+    lines.push(`Этап ${st.stageOrder}: ${st.stageTitle}`);
+    lines.push(
+      "Гипотезы: " + (st.hypotheses.length ? st.hypotheses.join(" | ") : "—"),
+    );
+    lines.push(
+      "Вопросы: " + (st.questions.length ? st.questions.join(" | ") : "—"),
+    );
+    lines.push("");
+  }
+  const stageCount = input.stages.length;
+  return [
+    {
+      role: "system",
+      content: `Ты методист медицинского образования. Проанализируй ход работы по клиническому кейсу.
+
+В тексте анализа (analysisMarkdown) по-прежнему поощряй широту предварительных гипотез как полезную привычку обучения — но не смягчай цифры оценок.
+
+ОЦЕНКИ score (0–100) — ЖЁСТКО, без снисхождения. Ориентиры (если данных мало — ставь нижнюю границу диапазона):
+- Нет ни одной непустой гипотезы И нет ни одного непустого вопроса на этапе → **score = 0**. Не придумывай «зачёт за намерение».
+- Только 1–2 короткие гипотезы, вопросов нет → обычно **5–20**, не выше **25**.
+- Есть гипотезы (3+), но вопросов нет → обычно не выше **35–45** без сильной аргументации в данных.
+- Нет гипотез, но есть вопросы → обычно **15–30**.
+- И гипотезы (несколько, осмысленные), и вопросы, логика видна → можно **50–70**.
+- **70+** только при реально плотной, связной работе этапа.
+- **85+** почти не используй — резерв для выдающейся работы.
+
+averageScore — среднее арифметическое score по этапам, округлённое до целого.
+
+Поле analysisMarkdown — развёрнутый текст на русском в Markdown:
+- Для каждого этапа — раздел ## «Этап N: …» (название как во входных данных).
+- Внутри этапа три подраздела ### в порядке: Положительные качества | Отрицательные качества | Рекомендации (маркированные списки; если пусто — строка «—»).
+- Названия гипотез из данных выделяй **жирным**.
+- В конце опционально ## Общие замечания с теми же тремя ###.
+- В тексте analysisMarkdown можно кратко упомянуть баллы этапов, но основные числа должны быть в stageScores и averageScore.
+
+Ответ строго один JSON-объект (без текста вокруг) вида:
+{"analysisMarkdown":"…","stageScores":[{"stageOrder":1,"stageTitle":"кратко","score":75},…],"averageScore":73}
+stageScores.length должно быть ${stageCount} (по числу этапов во входе). stageTitle — короткая подпись этапа.
+
+Не выставляй итоговую оценку вместо преподавателя — только предварительные баллы в полях score. Будь сдержан и требователен к цифрам.
+Версия промпта: ${SESSION_ANALYZE_VERSION}.`,
+    },
+    {
+      role: "user",
+      content: `Данные по этапам:\n${lines.join("\n")}\n\nЭталон преподавателя (если есть): ${input.teacherKey || "не предоставлен"}`,
+    },
+  ];
+}
+
+export type SessionAnalysisResult = {
+  analysis: string;
+  model: string | null;
+  scoresPayload: AiPreliminaryScoresPayload | null;
+  usage: ChatUsage | null;
+};
+
+/**
+ * Вызывает LLM и собирает итоговый результат (текст + баллы), применяя жёсткие
+ * потолки (enforceStrictStageScores) к любому пути получения баллов — прямому
+ * парсингу, восстановлению из "рыхлого" JSON и офлайн-фолбэку.
+ */
+export async function runSessionAnalysis(input: {
+  stages: SessionAnalysisStageInput[];
+  teacherKey: string;
+}): Promise<SessionAnalysisResult> {
+  const stageCount = input.stages.length;
+  const stageStats: StageWorkStats[] = input.stages.map((st) => ({
+    stageOrder: st.stageOrder,
+    hypothesisCount: st.hypotheses.filter((h) => h.trim().length > 0).length,
+    questionCount: st.questions.filter((q) => q.trim().length > 0).length,
+  }));
+  const rawLines = input.stages
+    .flatMap((st) => [
+      `Этап ${st.stageOrder}: ${st.stageTitle}`,
+      "Гипотезы: " + (st.hypotheses.length ? st.hypotheses.join(" | ") : "—"),
+      "Вопросы: " + (st.questions.length ? st.questions.join(" | ") : "—"),
+      "",
+    ])
+    .join("\n");
+
+  const messages = buildSessionAnalysisPrompt(input);
+  const llm = await chatCompletion(messages, true);
+
+  let analysis: string;
+  let model: string | null = null;
+  let scoresPayload: AiPreliminaryScoresPayload | null = null;
+
+  if (llm.ok && llm.text) {
+    const parsed = parseAiAnalysisResponse(llm.text);
+    if (parsed.ok) {
+      analysis = parsed.data.analysisMarkdown.trim();
+      scoresPayload = normalizeScores(parsed.data);
+      if (scoresPayload.stageScores.length !== stageCount && stageCount > 0) {
+        scoresPayload = null;
+      } else {
+        scoresPayload = enforceStrictStageScores(scoresPayload, stageStats);
+      }
+    } else {
+      const loose = recoverAiAnalysisFromLooseJson(llm.text);
+      if (loose) {
+        analysis = loose.analysisMarkdown;
+        if (
+          loose.scores &&
+          (stageCount === 0 || loose.scores.stageScores.length === stageCount)
+        ) {
+          scoresPayload = enforceStrictStageScores(loose.scores, stageStats);
+        }
+      } else {
+        analysis = llm.text.trim();
+      }
+    }
+    model = llm.model ?? null;
+  } else if (!llm.ok && llm.missingKey) {
+    analysis =
+      "## Локальный режим\n\nНе задан DEEPSEEK_API_KEY. Ниже сырые данные для ручного разбора:\n\n" +
+      rawLines;
+    model = "offline";
+  } else {
+    analysis = "Не удалось получить ответ модели. Данные сессии:\n\n" + rawLines;
+    model = "error";
+  }
+
+  analysis = unwrapAnalysisMarkdownIfJsonWrapped(analysis);
+  const usage = llm.ok ? llm.usage ?? null : null;
+  return { analysis, model, scoresPayload, usage };
 }

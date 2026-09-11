@@ -25,6 +25,7 @@ export type CaseSessionDetail = {
   caseVersionSnapshot: number;
   startedAt: Date;
   completedAt: Date | null;
+  joinToken: string | null;
   case: CaseDetail;
   studyGroup: {
     id: string;
@@ -71,60 +72,75 @@ export async function loadCaseSessionDetail(
       caseVersionSnapshot: number;
       startedAt: Date;
       completedAt: Date | null;
+      joinToken: string | null;
     }[]
   >`
     SELECT id, "caseId", "studyGroupId", "leaderUserId", status, "currentStageOrder",
-      "caseVersionSnapshot", "startedAt", "completedAt"
+      "caseVersionSnapshot", "startedAt", "completedAt", "joinToken"
     FROM "CaseSession" WHERE id = ${sessionId}
   `;
   const row = sessRows[0];
   if (!row) return null;
 
-  const caseFull = await loadCaseDetail(row.caseId);
+  const [caseFull, sgRows, leaderRows, subRows] = await Promise.all([
+    loadCaseDetail(
+      row.caseId,
+      row.status === "IN_PROGRESS"
+        ? { blockStageOrders: [row.currentStageOrder] }
+        : undefined,
+    ),
+    pool<
+      {
+        id: string;
+        name: string;
+        facultyId: string;
+        courseLevelId: string;
+        facultyName: string;
+        courseLevelName: string;
+        courseLevelSort: number;
+      }[]
+    >`
+      SELECT sg.id, sg.name, sg."facultyId", sg."courseLevelId",
+        f.name AS "facultyName", cl.name AS "courseLevelName", cl.sort AS "courseLevelSort"
+      FROM "StudyGroup" sg
+      JOIN "Faculty" f ON f.id = sg."facultyId"
+      JOIN "CourseLevel" cl ON cl.id = sg."courseLevelId"
+      WHERE sg.id = ${row.studyGroupId}
+    `,
+    pool<{ id: string; name: string | null; login: string }[]>`
+      SELECT id, name, login FROM "User" WHERE id = ${row.leaderUserId}
+    `,
+    pool<
+      {
+        id: string;
+        caseSessionId: string;
+        caseStageId: string;
+        submittedAt: Date | null;
+        openedAt: Date | null;
+      }[]
+    >`
+      SELECT id, "caseSessionId", "caseStageId", "submittedAt", "openedAt"
+      FROM "StageSubmission"
+      WHERE "caseSessionId" = ${sessionId}
+    `,
+  ]);
   if (!caseFull) return null;
-
-  const [sg] = await pool<
-    {
-      id: string;
-      name: string;
-      facultyId: string;
-      courseLevelId: string;
-    }[]
-  >`SELECT id, name, "facultyId", "courseLevelId" FROM "StudyGroup" WHERE id = ${row.studyGroupId}`;
+  const sg = sgRows[0];
   if (!sg) return null;
-
-  const [faculty] = await pool<{ id: string; name: string }[]>`
-    SELECT id, name FROM "Faculty" WHERE id = ${sg.facultyId}
-  `;
-  const [courseLevel] = await pool<{ id: string; name: string; sort: number }[]>`
-    SELECT id, name, sort FROM "CourseLevel" WHERE id = ${sg.courseLevelId}
-  `;
-  if (!faculty || !courseLevel) return null;
+  const faculty = { id: sg.facultyId, name: sg.facultyName };
+  const courseLevel = {
+    id: sg.courseLevelId,
+    name: sg.courseLevelName,
+    sort: sg.courseLevelSort,
+  };
+  const leader = leaderRows[0];
+  if (!leader) return null;
 
   const pickList = await fetchStaffPickListForDepartment(caseFull.departmentId);
   const members = pickList.map((u) => ({
     userId: u.id,
     user: { id: u.id, name: u.name, login: u.login },
   }));
-
-  const [leader] = await pool<{ id: string; name: string | null; login: string }[]>`
-    SELECT id, name, login FROM "User" WHERE id = ${row.leaderUserId}
-  `;
-  if (!leader) return null;
-
-  const subRows = await pool<
-    {
-      id: string;
-      caseSessionId: string;
-      caseStageId: string;
-      submittedAt: Date | null;
-      openedAt: Date | null;
-    }[]
-  >`
-    SELECT id, "caseSessionId", "caseStageId", "submittedAt", "openedAt"
-    FROM "StageSubmission"
-    WHERE "caseSessionId" = ${sessionId}
-  `;
 
   let submissions: {
     id: string;
@@ -140,16 +156,27 @@ export async function loadCaseSessionDetail(
   type SubStageRow = { id: string; caseId: string; order: number; title: string; isFinalReveal: boolean; learningGoals: string | null };
   type SubItemRow = { id: string; stageSubmissionId: string; text: string; lineageId: string; sort: number };
 
+  // Все этапы кейса уже загружены в caseFull — не нужен отдельный запрос к CaseStage.
+  const stageById = new Map<string, SubStageRow>(
+    caseFull.stages.map((s) => [
+      s.id,
+      {
+        id: s.id,
+        caseId: s.caseId,
+        order: s.order,
+        title: s.title,
+        isFinalReveal: s.isFinalReveal,
+        learningGoals: s.learningGoals,
+      },
+    ]),
+  );
+
+  let outcome: SessionOutcomeRow | undefined;
+
   if (subRows.length > 0) {
     const subIds = subRows.map((s) => s.id);
-    const stageIds = subRows.map((s) => s.caseStageId);
 
-    const [stageRows, hypRows, qRows] = await Promise.all([
-      pool<SubStageRow[]>`
-        SELECT id, "caseId", "order", title, "isFinalReveal", "learningGoals"
-        FROM "CaseStage"
-        WHERE id = ANY(${pool.array(stageIds)})
-      `,
+    const [hypRows, qRows, outcomeRows] = await Promise.all([
       pool<SubItemRow[]>`
         SELECT id, "stageSubmissionId", text, "lineageId", sort FROM "Hypothesis"
         WHERE "stageSubmissionId" = ANY(${pool.array(subIds)})
@@ -160,9 +187,13 @@ export async function loadCaseSessionDetail(
         WHERE "stageSubmissionId" = ANY(${pool.array(subIds)})
         ORDER BY sort ASC
       `,
+      pool<SessionOutcomeRow[]>`
+        SELECT id, "caseSessionId", "aiAnalysis", "aiModel", "aiPromptVersion",
+          "aiPreliminaryScores", "teacherGrade", "teacherComment", "finalizedAt"
+        FROM "SessionOutcome" WHERE "caseSessionId" = ${sessionId}
+      `,
     ]);
-
-    const stageById = new Map<string, SubStageRow>(stageRows.map((s) => [s.id, s]));
+    outcome = outcomeRows[0];
     const hypBySubId = new Map<string, SubItemRow[]>();
     for (const h of hypRows) {
       const arr = hypBySubId.get(h.stageSubmissionId) ?? [];
@@ -186,13 +217,14 @@ export async function loadCaseSessionDetail(
         questions: (qBySubId.get(sub.id) ?? []).map(({ stageSubmissionId: _s, ...rest }) => rest),
       };
     });
+  } else {
+    const outcomeRows = await pool<SessionOutcomeRow[]>`
+      SELECT id, "caseSessionId", "aiAnalysis", "aiModel", "aiPromptVersion",
+        "aiPreliminaryScores", "teacherGrade", "teacherComment", "finalizedAt"
+      FROM "SessionOutcome" WHERE "caseSessionId" = ${sessionId}
+    `;
+    outcome = outcomeRows[0];
   }
-
-  const [outcome] = await pool<SessionOutcomeRow[]>`
-    SELECT id, "caseSessionId", "aiAnalysis", "aiModel", "aiPromptVersion",
-      "aiPreliminaryScores", "teacherGrade", "teacherComment", "finalizedAt"
-    FROM "SessionOutcome" WHERE "caseSessionId" = ${sessionId}
-  `;
 
   return {
     ...row,
@@ -216,6 +248,7 @@ export type CaseSessionBrief = {
   leaderUserId: string;
   status: SessionStatus;
   currentStageOrder: number;
+  totalStages: number;
   caseVersionSnapshot: number;
   startedAt: Date;
   completedAt: Date | null;
@@ -297,8 +330,13 @@ export async function loadCaseSessionBrief(
     FROM "SessionOutcome" WHERE "caseSessionId" = ${sessionId}
   `;
 
+  const [stageCountRow] = await pool<[{ c: number }]>`
+    SELECT COUNT(*)::int AS c FROM "CaseStage" WHERE "caseId" = ${row.caseId}
+  `;
+
   return {
     ...row,
+    totalStages: stageCountRow?.c ?? 0,
     case: c,
     studyGroup: {
       id: sg.id,

@@ -18,7 +18,7 @@ function authErrorMessage(err: unknown): string {
   if (!(err instanceof Error)) return "Ошибка сервера";
   const m = err.message;
   if (m.includes("DATABASE_URL")) {
-    return "Сервер: в .env не задан DATABASE_URL (строка Postgres из Supabase).";
+    return "Сервер: в .env не задан DATABASE_URL (строка Postgres из Neon).";
   }
   if (m.includes("AUTH_SECRET")) {
     return "Сервер: в .env не задан AUTH_SECRET (случайная длинная строка).";
@@ -27,10 +27,8 @@ function authErrorMessage(err: unknown): string {
     /getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|no address/i.test(m)
   ) {
     return (
-      "Не удаётся достучаться до Postgres (DNS/сеть). У хоста db.*.supabase.co часто только IPv6 — " +
-      "на Windows без IPv6 бывает ошибка вроде getaddrinfo ENOENT. " +
-      "Возьми в Supabase: Project Settings → Database → Connection string → режим «Session pooler» или «Transaction» " +
-      "(порт 6543, другой хост pooler), подставь пароль и вставь URI в DATABASE_URL."
+      "Не удаётся достучаться до Postgres (DNS/сеть). " +
+      "Проверьте DATABASE_URL в Neon Dashboard → Connection string (pooled)."
     );
   }
   if (process.env.NODE_ENV !== "production") {

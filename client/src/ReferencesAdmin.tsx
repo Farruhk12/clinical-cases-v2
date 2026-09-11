@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
 import { IconPencil, IconTrash } from "@/components/icons";
+import { LoadingOverlay } from "@/components/LoadingOverlay";
 import { apiFetch } from "@/lib/api-fetch";
 
 type Department = { id: string; name: string };
@@ -13,9 +14,7 @@ type EditingRow =
   | { kind: "department" | "faculty"; id: string; name: string }
   | { kind: "courseLevel"; id: string; name: string; sort: number };
 
-/** Явный зелёный (`green-*` из дефолтного Tailwind + `!` поверх чужих стилей кнопок) */
-const btnPrimaryGreenClass =
-  "shrink-0 min-h-[2.5rem] rounded-xl border-2 border-green-800 !bg-green-600 px-4 py-2.5 text-sm font-bold !text-white shadow-md shadow-green-900/30 hover:!bg-green-700 active:!bg-green-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-600 disabled:opacity-60";
+const btnPrimaryGreenClass = "ui-btn-primary shrink-0";
 
 async function readError(res: Response): Promise<string> {
   const j = (await res.json().catch(() => ({}))) as { error?: string };
@@ -141,9 +140,9 @@ export function ReferencesAdmin({
     const isEditing = editing?.kind === kind && editing.id === row.id;
     if (isEditing) {
       return (
-        <li className="flex flex-col gap-2 rounded-lg border border-brand-200 bg-brand-50/50 px-3 py-2">
+        <li className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-brand-200 bg-brand-50/50 px-3 py-2">
           <input
-            className="w-full min-w-0 rounded-md border border-mist-200 bg-white px-3 py-1.5 text-sm text-slate-900"
+            className="ui-input rounded-md"
             value={editing.name}
             onChange={(e) =>
               setEditing({ ...editing, name: e.target.value })
@@ -155,7 +154,7 @@ export function ReferencesAdmin({
             <button
               type="button"
               disabled={busy}
-              className={`${btnPrimaryGreenClass} min-h-[2.25rem] rounded-md px-4 py-2 text-sm`}
+              className={btnPrimaryGreenClass}
               onClick={() => void saveEdit()}
             >
               Сохранить
@@ -163,7 +162,7 @@ export function ReferencesAdmin({
             <button
               type="button"
               disabled={busy}
-              className="min-h-[2.25rem] rounded-md border-2 border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+              className="ui-btn-secondary"
               onClick={() => setEditing(null)}
             >
               Отмена
@@ -173,8 +172,8 @@ export function ReferencesAdmin({
       );
     }
     return (
-      <li className="flex items-center justify-between gap-3 rounded-lg border border-transparent px-2 py-1.5 hover:bg-mist-50/80">
-        <span className="min-w-0 flex-1 text-sm text-slate-700">{row.name}</span>
+      <li className="flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-transparent px-2 py-1.5 hover:bg-surface">
+        <span className="min-w-0 flex-1 text-sm text-ink-soft">{row.name}</span>
         <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
@@ -193,7 +192,7 @@ export function ReferencesAdmin({
             disabled={busy}
             title="Удалить"
             aria-label={`Удалить: ${row.name}`}
-            className="inline-flex items-center justify-center rounded-lg p-2 text-red-600 transition hover:bg-red-50 hover:text-red-800 disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded-lg p-2 text-[var(--color-danger)] transition hover:bg-[var(--color-danger-bg)] disabled:opacity-50"
             onClick={() => void removeRow(kind, row)}
           >
             <IconTrash className="h-4 w-4" />
@@ -208,9 +207,9 @@ export function ReferencesAdmin({
       editing?.kind === "courseLevel" && editing.id === row.id;
     if (isEditing) {
       return (
-        <li className="flex flex-col gap-2 rounded-lg border border-brand-200 bg-brand-50/50 px-3 py-2">
+        <li className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-brand-200 bg-brand-50/50 px-3 py-2">
           <input
-            className="w-full min-w-0 rounded-md border border-mist-200 bg-white px-3 py-1.5 text-sm text-slate-900"
+            className="ui-input rounded-md"
             value={editing.name}
             onChange={(e) =>
               setEditing({ ...editing, name: e.target.value })
@@ -219,13 +218,13 @@ export function ReferencesAdmin({
             disabled={busy}
             placeholder="Название"
           />
-          <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+          <label className="flex flex-col gap-1 text-xs font-medium text-ink-soft">
             Порядок сортировки (sort)
             <input
               type="number"
               min={0}
               step={1}
-              className="w-full max-w-[12rem] rounded-md border border-mist-200 bg-white px-3 py-1.5 text-sm text-slate-900"
+              className="ui-input max-w-[12rem] rounded-md"
               value={editing.sort}
               onChange={(e) => {
                 const v = Number.parseInt(e.target.value, 10);
@@ -241,7 +240,7 @@ export function ReferencesAdmin({
             <button
               type="button"
               disabled={busy}
-              className={`${btnPrimaryGreenClass} min-h-[2.25rem] rounded-md px-4 py-2 text-sm`}
+              className={btnPrimaryGreenClass}
               onClick={() => void saveEdit()}
             >
               Сохранить
@@ -249,7 +248,7 @@ export function ReferencesAdmin({
             <button
               type="button"
               disabled={busy}
-              className="min-h-[2.25rem] rounded-md border-2 border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-60"
+              className="ui-btn-secondary"
               onClick={() => setEditing(null)}
             >
               Отмена
@@ -259,10 +258,10 @@ export function ReferencesAdmin({
       );
     }
     return (
-      <li className="flex items-center justify-between gap-3 rounded-lg border border-transparent px-2 py-1.5 hover:bg-mist-50/80">
-        <span className="min-w-0 flex-1 text-sm text-slate-700">
+      <li className="flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-transparent px-2 py-1.5 hover:bg-surface">
+        <span className="min-w-0 flex-1 text-sm text-ink-soft">
           {row.name}
-          <span className="ml-2 text-xs font-normal text-slate-400">
+          <span className="ml-2 text-xs font-normal text-faint">
             sort {row.sort}
           </span>
         </span>
@@ -289,7 +288,7 @@ export function ReferencesAdmin({
             disabled={busy}
             title="Удалить"
             aria-label={`Удалить: ${row.name}`}
-            className="inline-flex items-center justify-center rounded-lg p-2 text-red-600 transition hover:bg-red-50 hover:text-red-800 disabled:opacity-50"
+            className="inline-flex items-center justify-center rounded-lg p-2 text-[var(--color-danger)] transition hover:bg-[var(--color-danger-bg)] disabled:opacity-50"
             onClick={() => void removeRow("courseLevel", row)}
           >
             <IconTrash className="h-4 w-4" />
@@ -301,22 +300,18 @@ export function ReferencesAdmin({
 
   return (
     <div className="space-y-8">
-      {err ? (
-        <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-          {err}
-        </p>
-      ) : null}
+      {err ? <p className="ui-alert-danger">{err}</p> : null}
 
-      <section className="rounded-2xl border border-white/80 bg-white/90 p-5 shadow-card backdrop-blur-sm">
-        <h2 className="text-sm font-semibold text-slate-900">Кафедры</h2>
+      <section className="ui-card p-5">
+        <h2 className="text-sm font-semibold text-ink">Кафедры</h2>
         <ul className="mt-3 space-y-1">
           {departments.map((d) => (
             <RefRow key={d.id} kind="department" row={d} />
           ))}
         </ul>
-        <div className="mt-4 flex flex-wrap gap-2 border-t border-mist-100 pt-4">
+        <div className="mt-4 flex flex-wrap gap-2 border-t border-line pt-4">
           <input
-            className="min-w-[12rem] flex-1 rounded-xl border border-mist-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-brand-300 focus:ring-2 focus:ring-brand-200/50"
+            className="ui-input min-w-[12rem] flex-1"
             placeholder="Название кафедры"
             value={deptName}
             onChange={(e) => setDeptName(e.target.value)}
@@ -333,16 +328,16 @@ export function ReferencesAdmin({
         </div>
       </section>
 
-      <section className="rounded-2xl border border-white/80 bg-white/90 p-5 shadow-card backdrop-blur-sm">
-        <h2 className="text-sm font-semibold text-slate-900">Факультеты</h2>
+      <section className="ui-card p-5">
+        <h2 className="text-sm font-semibold text-ink">Факультеты</h2>
         <ul className="mt-3 space-y-1">
           {faculties.map((f) => (
             <RefRow key={f.id} kind="faculty" row={f} />
           ))}
         </ul>
-        <div className="mt-4 flex flex-wrap gap-2 border-t border-mist-100 pt-4">
+        <div className="mt-4 flex flex-wrap gap-2 border-t border-line pt-4">
           <input
-            className="min-w-[12rem] flex-1 rounded-xl border border-mist-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-brand-300 focus:ring-2 focus:ring-brand-200/50"
+            className="ui-input min-w-[12rem] flex-1"
             placeholder="Название факультета"
             value={facName}
             onChange={(e) => setFacName(e.target.value)}
@@ -359,16 +354,16 @@ export function ReferencesAdmin({
         </div>
       </section>
 
-      <section className="rounded-2xl border border-white/80 bg-white/90 p-5 shadow-card backdrop-blur-sm">
-        <h2 className="text-sm font-semibold text-slate-900">Курсы (уровни)</h2>
+      <section className="ui-card p-5">
+        <h2 className="text-sm font-semibold text-ink">Курсы (уровни)</h2>
         <ul className="mt-3 space-y-1">
           {courseLevels.map((c) => (
             <CourseLevelRow key={c.id} row={c} />
           ))}
         </ul>
-        <div className="mt-4 flex flex-wrap gap-2 border-t border-mist-100 pt-4">
+        <div className="mt-4 flex flex-wrap gap-2 border-t border-line pt-4">
           <input
-            className="min-w-[12rem] flex-1 rounded-xl border border-mist-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-brand-300 focus:ring-2 focus:ring-brand-200/50"
+            className="ui-input min-w-[12rem] flex-1"
             placeholder="Например, 5 курс"
             value={courseName}
             onChange={(e) => setCourseName(e.target.value)}
@@ -384,6 +379,8 @@ export function ReferencesAdmin({
           </button>
         </div>
       </section>
+
+      {busy && <LoadingOverlay label="Сохраняем…" />}
     </div>
   );
 }

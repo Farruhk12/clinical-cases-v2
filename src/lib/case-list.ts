@@ -23,6 +23,7 @@ export type CaseListItem = {
     courseLevel: CourseRef;
   }[];
   _count: { sessions: number };
+  stageCount: number;
 };
 
 type CaseListRow = {
@@ -36,6 +37,7 @@ type CaseListRow = {
   caseFaculties: unknown;
   caseCourseLevels: unknown;
   sessionCount: number;
+  stageCount: number;
 };
 
 function mapRow(r: CaseListRow): CaseListItem {
@@ -56,6 +58,7 @@ function mapRow(r: CaseListRow): CaseListItem {
     caseFaculties,
     caseCourseLevels,
     _count: { sessions: r.sessionCount },
+    stageCount: r.stageCount,
   };
 }
 
@@ -87,7 +90,8 @@ const caseListSelect = `
     JOIN "CourseLevel" cl ON cl.id = ccl."courseLevelId"
     WHERE ccl."caseId" = c.id
   ) AS "caseCourseLevels",
-  (SELECT COUNT(*)::int FROM "CaseSession" cs WHERE cs."caseId" = c.id) AS "sessionCount"
+  (SELECT COUNT(*)::int FROM "CaseSession" cs WHERE cs."caseId" = c.id) AS "sessionCount",
+  (SELECT COUNT(*)::int FROM "CaseStage" st WHERE st."caseId" = c.id) AS "stageCount"
 `;
 
 export async function fetchCaseListForRole(

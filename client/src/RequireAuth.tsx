@@ -46,7 +46,10 @@ export function RequireAuth({
   return (
     <div className="flex flex-1 flex-col">
       <NavBar role={user.role} login={user.login} />
-      <div className="safe-area-x mx-auto w-full max-w-6xl flex-1 py-6 sm:py-8 motion-safe:animate-fade-in">
+      <div
+        id="main"
+        className="safe-area-x mx-auto w-full max-w-[96rem] flex-1 py-4 sm:py-5 motion-safe:animate-fade-in"
+      >
         {content}
       </div>
     </div>

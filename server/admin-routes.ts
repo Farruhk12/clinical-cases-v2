@@ -5,6 +5,12 @@ import { z } from "zod";
 import { getSql } from "../src/lib/db";
 import { requireUser, sendAuth, errorResponse } from "../src/lib/api-auth";
 import { routeParam } from "./param";
+import {
+  computeAiCost,
+  costMarkupMultiplier,
+  priceInputPerMillion,
+  priceOutputPerMillion,
+} from "../src/lib/ai-cost";
 
 const loginSchema = z
   .string()
@@ -214,5 +220,99 @@ export function registerAdminRoutes(app: Express) {
     await sql`DELETE FROM "StudyGroupMember" WHERE "userId" = ${userId}`;
     await sql`DELETE FROM "User" WHERE id = ${userId}`;
     res.json({ ok: true });
+  });
+
+  /* ───── расходы на ИИ (Настройки → Расходы на ИИ) ───── */
+  app.get("/api/admin/ai-usage", async (req: Request, res: Response) => {
+    const a = await requireUser(req);
+    if (sendAuth(res, a)) return;
+    if (a.session.user.role !== "ADMIN") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const sql = getSql();
+
+    const totalsRows = await sql<
+      { promptTokens: number; completionTokens: number; callCount: number }[]
+    >`
+      SELECT
+        COALESCE(SUM("promptTokens"), 0)::int AS "promptTokens",
+        COALESCE(SUM("completionTokens"), 0)::int AS "completionTokens",
+        COUNT(*)::int AS "callCount"
+      FROM "AiUsageLog"
+    `;
+    const totals = totalsRows[0] ?? { promptTokens: 0, completionTokens: 0, callCount: 0 };
+
+    const byCaseRows = await sql<
+      {
+        caseId: string;
+        caseTitle: string;
+        promptTokens: number;
+        completionTokens: number;
+        callCount: number;
+        sessionCount: number;
+      }[]
+    >`
+      SELECT
+        c.id AS "caseId",
+        c.title AS "caseTitle",
+        COALESCE(SUM(u."promptTokens"), 0)::int AS "promptTokens",
+        COALESCE(SUM(u."completionTokens"), 0)::int AS "completionTokens",
+        COUNT(u.id)::int AS "callCount",
+        COUNT(DISTINCT u."caseSessionId")::int AS "sessionCount"
+      FROM "AiUsageLog" u
+      JOIN "CaseSession" cs ON cs.id = u."caseSessionId"
+      JOIN "Case" c ON c.id = cs."caseId"
+      GROUP BY c.id, c.title
+      ORDER BY SUM(u."promptTokens" + u."completionTokens") DESC
+    `;
+
+    const bySessionRows = await sql<
+      {
+        caseSessionId: string;
+        caseTitle: string;
+        studyGroupName: string;
+        startedAt: Date;
+        promptTokens: number;
+        completionTokens: number;
+        callCount: number;
+      }[]
+    >`
+      SELECT
+        cs.id AS "caseSessionId",
+        c.title AS "caseTitle",
+        sg.name AS "studyGroupName",
+        cs."startedAt",
+        COALESCE(SUM(u."promptTokens"), 0)::int AS "promptTokens",
+        COALESCE(SUM(u."completionTokens"), 0)::int AS "completionTokens",
+        COUNT(u.id)::int AS "callCount"
+      FROM "AiUsageLog" u
+      JOIN "CaseSession" cs ON cs.id = u."caseSessionId"
+      JOIN "Case" c ON c.id = cs."caseId"
+      JOIN "StudyGroup" sg ON sg.id = cs."studyGroupId"
+      GROUP BY cs.id, c.title, sg.name, cs."startedAt"
+      ORDER BY cs."startedAt" DESC
+      LIMIT 50
+    `;
+
+    res.json({
+      pricing: {
+        inputPerMillionUsd: priceInputPerMillion(),
+        outputPerMillionUsd: priceOutputPerMillion(),
+        markupMultiplier: costMarkupMultiplier(),
+      },
+      totals: {
+        ...totals,
+        ...computeAiCost(totals),
+      },
+      byCase: byCaseRows.map((r) => ({
+        ...r,
+        ...computeAiCost(r),
+      })),
+      bySession: bySessionRows.map((r) => ({
+        ...r,
+        startedAt: r.startedAt,
+        ...computeAiCost(r),
+      })),
+    });
   });
 }

@@ -120,8 +120,11 @@ CREATE TABLE IF NOT EXISTS "CaseSession" (
     "caseVersionSnapshot" INTEGER NOT NULL,
     "startedAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "completedAt" TIMESTAMPTZ(3),
+    "joinToken" TEXT,
     CONSTRAINT "CaseSession_pkey" PRIMARY KEY ("id")
 );
+
+ALTER TABLE "CaseSession" ADD COLUMN IF NOT EXISTS "joinToken" TEXT;
 
 CREATE TABLE IF NOT EXISTS "StageSubmission" (
     "id" TEXT NOT NULL,
@@ -150,6 +153,19 @@ CREATE TABLE IF NOT EXISTS "StudentQuestion" (
     CONSTRAINT "StudentQuestion_pkey" PRIMARY KEY ("id")
 );
 
+CREATE TABLE IF NOT EXISTS "SessionGuestIdea" (
+    "id" TEXT NOT NULL,
+    "caseSessionId" TEXT NOT NULL,
+    "caseStageId" TEXT NOT NULL,
+    "guestKey" TEXT NOT NULL,
+    "displayName" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "text" TEXT NOT NULL,
+    "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "takenAt" TIMESTAMPTZ(3),
+    CONSTRAINT "SessionGuestIdea_pkey" PRIMARY KEY ("id")
+);
+
 CREATE TABLE IF NOT EXISTS "SessionOutcome" (
     "id" TEXT NOT NULL,
     "caseSessionId" TEXT NOT NULL,
@@ -163,15 +179,36 @@ CREATE TABLE IF NOT EXISTS "SessionOutcome" (
     CONSTRAINT "SessionOutcome_pkey" PRIMARY KEY ("id")
 );
 
+CREATE TABLE IF NOT EXISTS "AiUsageLog" (
+    "id" TEXT NOT NULL,
+    "caseSessionId" TEXT NOT NULL,
+    "model" TEXT NOT NULL,
+    "promptTokens" INTEGER NOT NULL,
+    "completionTokens" INTEGER NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "AiUsageLog_pkey" PRIMARY KEY ("id")
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS "User_login_key" ON "User"("login");
 CREATE UNIQUE INDEX IF NOT EXISTS "StudyGroupMember_userId_groupId_key" ON "StudyGroupMember"("userId", "groupId");
 CREATE UNIQUE INDEX IF NOT EXISTS "CaseStage_caseId_order_key" ON "CaseStage"("caseId", "order");
 CREATE UNIQUE INDEX IF NOT EXISTS "StageBlock_caseStageId_order_key" ON "StageBlock"("caseStageId", "order");
 CREATE INDEX IF NOT EXISTS "CaseSession_caseId_idx" ON "CaseSession"("caseId");
 CREATE INDEX IF NOT EXISTS "CaseSession_studyGroupId_idx" ON "CaseSession"("studyGroupId");
+CREATE INDEX IF NOT EXISTS "CaseSession_active_case_group_idx"
+  ON "CaseSession"("caseId", "studyGroupId")
+  WHERE status = 'IN_PROGRESS';
+CREATE INDEX IF NOT EXISTS "Case_departmentId_idx" ON "Case"("departmentId");
+CREATE INDEX IF NOT EXISTS "CaseSession_startedAt_idx" ON "CaseSession"("startedAt" DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS "StageSubmission_caseSessionId_caseStageId_key" ON "StageSubmission"("caseSessionId", "caseStageId");
 CREATE INDEX IF NOT EXISTS "Hypothesis_lineageId_idx" ON "Hypothesis"("lineageId");
 CREATE INDEX IF NOT EXISTS "StudentQuestion_lineageId_idx" ON "StudentQuestion"("lineageId");
+CREATE UNIQUE INDEX IF NOT EXISTS "CaseSession_joinToken_key" ON "CaseSession"("joinToken");
+CREATE INDEX IF NOT EXISTS "SessionGuestIdea_session_stage_idx"
+  ON "SessionGuestIdea"("caseSessionId", "caseStageId", "createdAt");
+CREATE INDEX IF NOT EXISTS "SessionGuestIdea_guestKey_idx" ON "SessionGuestIdea"("guestKey");
+CREATE INDEX IF NOT EXISTS "AiUsageLog_caseSessionId_idx" ON "AiUsageLog"("caseSessionId");
+CREATE INDEX IF NOT EXISTS "AiUsageLog_createdAt_idx" ON "AiUsageLog"("createdAt");
 CREATE UNIQUE INDEX IF NOT EXISTS "SessionOutcome_caseSessionId_key" ON "SessionOutcome"("caseSessionId");
 
 DO $$ BEGIN
@@ -251,7 +288,19 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
+  ALTER TABLE "SessionGuestIdea" ADD CONSTRAINT "SessionGuestIdea_caseSessionId_fkey" FOREIGN KEY ("caseSessionId") REFERENCES "CaseSession"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE "SessionGuestIdea" ADD CONSTRAINT "SessionGuestIdea_caseStageId_fkey" FOREIGN KEY ("caseStageId") REFERENCES "CaseStage"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
   ALTER TABLE "SessionOutcome" ADD CONSTRAINT "SessionOutcome_caseSessionId_fkey" FOREIGN KEY ("caseSessionId") REFERENCES "CaseSession"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER TABLE "AiUsageLog" ADD CONSTRAINT "AiUsageLog_caseSessionId_fkey" FOREIGN KEY ("caseSessionId") REFERENCES "CaseSession"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- Демо-пользователи (bcrypt, пароль demo1234)

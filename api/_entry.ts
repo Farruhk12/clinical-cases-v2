@@ -5,11 +5,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createApiApp } from "../server/createApiApp";
 
-const app = createApiApp({ vercelPathRewrite: true });
+type ExpressHandle = {
+  handle: (req: IncomingMessage, res: ServerResponse) => void;
+};
+
+const app = createApiApp({ vercelPathRewrite: true }) as unknown as ExpressHandle;
 
 export default function handler(
   req: IncomingMessage,
   res: ServerResponse,
 ): void {
-  app.handle(req as never, res as never);
+  app.handle(req, res);
 }
