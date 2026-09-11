@@ -1,6 +1,8 @@
 import { Link, useSearchParams } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import { PageLoader } from "@/components/PageLoader";
+import { LoadingOverlay } from "@/components/LoadingOverlay";
+import { IconTrash } from "@/components/icons";
 import { useAuth } from "@/auth-context";
 import { apiFetch } from "@/lib/api-fetch";
 import {
@@ -54,6 +56,7 @@ export function SessionsPage() {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -107,6 +110,32 @@ export function SessionsPage() {
     if (next === "all") nextParams.delete("tab");
     else nextParams.set("tab", next);
     setSearchParams(nextParams, { replace: true });
+  }
+
+  async function deleteSession(s: SessionBriefJson, e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const ok = window.confirm(
+      `Удалить занятие «${s.case.title}» (группа ${s.studyGroup.name}) безвозвратно? Гипотезы, вопросы и результаты разбора пропадут.`,
+    );
+    if (!ok) return;
+    setDeletingId(s.id);
+    setError(null);
+    try {
+      const res = await apiFetch(`/api/sessions/${s.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setError(
+          typeof j.error === "string" ? j.error : "Не удалось удалить занятие",
+        );
+        return;
+      }
+      setSessions((prev) => prev.filter((x) => x.id !== s.id));
+    } catch {
+      setError("Сеть недоступна или запрос прерван.");
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   if (!user) return null;
@@ -182,10 +211,10 @@ export function SessionsPage() {
               {filtered.map((s) => {
                 const mark = debriefLabel(s);
                 return (
-                  <li key={s.id}>
+                  <li key={s.id} className="group flex items-center gap-2 bg-elevated transition hover:bg-surface">
                     <Link
                       to={`/sessions/${s.id}`}
-                      className="group flex items-start gap-2.5 bg-elevated px-3.5 py-2.5 transition hover:bg-surface"
+                      className="flex min-w-0 flex-1 items-start gap-2.5 px-3.5 py-2.5"
                     >
                       <span
                         className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
@@ -225,12 +254,25 @@ export function SessionsPage() {
                           ) : null}
                         </p>
                       </div>
-                      <span
-                        className={`${sessionActionClass(s)} pointer-events-none mt-0.5 shrink-0`}
+                    </Link>
+                    <div className="flex shrink-0 items-center gap-1.5 pr-3.5">
+                      <Link
+                        to={`/sessions/${s.id}`}
+                        className={`${sessionActionClass(s)} shrink-0`}
                       >
                         {sessionActionLabel(s)}
-                      </span>
-                    </Link>
+                      </Link>
+                      <button
+                        type="button"
+                        disabled={deletingId === s.id}
+                        onClick={(e) => void deleteSession(s, e)}
+                        aria-label={`Удалить занятие «${s.case.title}»`}
+                        title="Удалить занятие"
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-faint opacity-100 transition hover:bg-[var(--color-danger-bg)] hover:text-[var(--color-danger)] sm:opacity-0 sm:focus-visible:opacity-100 sm:group-hover:opacity-100 disabled:opacity-100"
+                      >
+                        <IconTrash className="h-4 w-4" />
+                      </button>
+                    </div>
                   </li>
                 );
               })}
@@ -257,6 +299,8 @@ export function SessionsPage() {
           </div>
         ) : null}
       </section>
+
+      {deletingId && <LoadingOverlay label="Удаляем занятие…" />}
     </div>
   );
 }

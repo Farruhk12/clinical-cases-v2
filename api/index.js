@@ -48788,7 +48788,7 @@ function corsMiddleware() {
 
 // server/registerApi.ts
 var import_bcryptjs2 = __toESM(require_bcryptjs(), 1);
-import { randomUUID as randomUUID5 } from "crypto";
+import { randomUUID as randomUUID6 } from "crypto";
 
 // node_modules/zod/v3/external.js
 var external_exports = {};
@@ -60014,7 +60014,209 @@ function routeParam(v) {
 }
 
 // server/session-routes.ts
-import { randomUUID as randomUUID2 } from "crypto";
+import { randomUUID as randomUUID3 } from "crypto";
+
+// src/lib/session-logic.ts
+import { randomUUID } from "crypto";
+async function loadActiveSessionStage(sessionId) {
+  const pool = getSql();
+  const rows = await pool`
+    SELECT
+      cs.id,
+      cs.status,
+      cs."currentStageOrder",
+      cs."caseId",
+      st.id AS "currentStageId"
+    FROM "CaseSession" cs
+    LEFT JOIN "CaseStage" st
+      ON st."caseId" = cs."caseId"
+     AND st."order" = cs."currentStageOrder"
+    WHERE cs.id = ${sessionId}
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) throw new Error("SESSION_NOT_FOUND");
+  if (row.status !== "IN_PROGRESS") throw new Error("SESSION_CLOSED");
+  if (!row.currentStageId) throw new Error("STAGE_NOT_FOUND");
+  return {
+    session: {
+      id: row.id,
+      status: row.status,
+      currentStageOrder: row.currentStageOrder,
+      caseId: row.caseId
+    },
+    currentStageId: row.currentStageId
+  };
+}
+async function updateSessionDraft(sessionId, items) {
+  const pool = getSql();
+  const { session, currentStageId } = await loadActiveSessionStage(sessionId);
+  const subRows = await pool`
+    SELECT id, "submittedAt" FROM "StageSubmission"
+    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStageId}
+    LIMIT 1
+  `;
+  const submission = subRows[0];
+  if (!submission) throw new Error("SUBMISSION_NOT_FOUND");
+  if (submission.submittedAt) throw new Error("STAGE_ALREADY_SUBMITTED");
+  await pool.begin(async (txn) => {
+    const sql = asTransactionSql(pool, txn);
+    await sql`DELETE FROM "Hypothesis" WHERE "stageSubmissionId" = ${submission.id}`;
+    await sql`DELETE FROM "StudentQuestion" WHERE "stageSubmissionId" = ${submission.id}`;
+    for (let i = 0; i < items.hypotheses.length; i++) {
+      const h = items.hypotheses[i];
+      await sql`
+        INSERT INTO "Hypothesis" (id, "stageSubmissionId", text, "lineageId", sort)
+        VALUES (${randomUUID()}, ${submission.id}, ${h.text}, ${h.lineageId ?? randomUUID()}, ${i})
+      `;
+    }
+    for (let i = 0; i < items.questions.length; i++) {
+      const q = items.questions[i];
+      await sql`
+        INSERT INTO "StudentQuestion" (id, "stageSubmissionId", text, "lineageId", sort)
+        VALUES (${randomUUID()}, ${submission.id}, ${q.text}, ${q.lineageId ?? randomUUID()}, ${i})
+      `;
+    }
+  });
+  return { ok: true };
+}
+async function advanceSession(sessionId) {
+  const pool = getSql();
+  const { session, currentStageId } = await loadActiveSessionStage(sessionId);
+  const now = /* @__PURE__ */ new Date();
+  const subRows = await pool`
+    SELECT id, "submittedAt" FROM "StageSubmission"
+    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStageId}
+    LIMIT 1
+  `;
+  const currentSubmission = subRows[0];
+  if (!currentSubmission) throw new Error("SUBMISSION_NOT_FOUND");
+  if (currentSubmission.submittedAt) throw new Error("STAGE_ALREADY_SUBMITTED");
+  const hypRows = await pool`
+    SELECT id, text, "lineageId", sort FROM "Hypothesis"
+    WHERE "stageSubmissionId" = ${currentSubmission.id} ORDER BY sort
+  `;
+  const qRows = await pool`
+    SELECT id, text, "lineageId", sort FROM "StudentQuestion"
+    WHERE "stageSubmissionId" = ${currentSubmission.id} ORDER BY sort
+  `;
+  const [nextStage] = await pool`
+    SELECT id, "order"
+    FROM "CaseStage"
+    WHERE "caseId" = ${session.caseId} AND "order" > ${session.currentStageOrder}
+    ORDER BY "order" ASC
+    LIMIT 1
+  `;
+  await pool`UPDATE "StageSubmission" SET "submittedAt" = ${now} WHERE id = ${currentSubmission.id}`;
+  if (!nextStage) {
+    await pool`
+      UPDATE "CaseSession" SET status = 'COMPLETED', "completedAt" = ${now} WHERE id = ${session.id}
+    `;
+    const oid = randomUUID();
+    await pool`
+      INSERT INTO "SessionOutcome" (id, "caseSessionId")
+      VALUES (${oid}, ${session.id})
+      ON CONFLICT ("caseSessionId") DO NOTHING
+    `;
+    return { completed: true };
+  }
+  await pool`
+    UPDATE "CaseSession" SET "currentStageOrder" = ${nextStage.order} WHERE id = ${session.id}
+  `;
+  const newSubId = randomUUID();
+  await pool.begin(async (txn) => {
+    const sql = asTransactionSql(pool, txn);
+    await sql`
+      INSERT INTO "StageSubmission" (id, "caseSessionId", "caseStageId", "openedAt")
+      VALUES (${newSubId}, ${session.id}, ${nextStage.id}, ${now})
+    `;
+    for (let i = 0; i < hypRows.length; i++) {
+      const h = hypRows[i];
+      await sql`
+        INSERT INTO "Hypothesis" (id, "stageSubmissionId", text, "lineageId", sort)
+        VALUES (${randomUUID()}, ${newSubId}, ${h.text}, ${h.lineageId}, ${i})
+      `;
+    }
+    for (let i = 0; i < qRows.length; i++) {
+      const q = qRows[i];
+      await sql`
+        INSERT INTO "StudentQuestion" (id, "stageSubmissionId", text, "lineageId", sort)
+        VALUES (${randomUUID()}, ${newSubId}, ${q.text}, ${q.lineageId}, ${i})
+      `;
+    }
+  });
+  return { completed: false, nextStageOrder: nextStage.order };
+}
+async function forceCompleteSession(sessionId) {
+  const pool = getSql();
+  const { session, currentStageId } = await loadActiveSessionStage(sessionId);
+  const now = /* @__PURE__ */ new Date();
+  const subRows = await pool`
+    SELECT id, "submittedAt" FROM "StageSubmission"
+    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStageId}
+    LIMIT 1
+  `;
+  const currentSubmission = subRows[0];
+  if (!currentSubmission) throw new Error("SUBMISSION_NOT_FOUND");
+  if (!currentSubmission.submittedAt) {
+    await pool`
+      UPDATE "StageSubmission" SET "submittedAt" = ${now} WHERE id = ${currentSubmission.id}
+    `;
+  }
+  await pool`
+    UPDATE "CaseSession" SET status = 'COMPLETED', "completedAt" = ${now} WHERE id = ${session.id}
+  `;
+  const oid = randomUUID();
+  await pool`
+    INSERT INTO "SessionOutcome" (id, "caseSessionId")
+    VALUES (${oid}, ${session.id})
+    ON CONFLICT ("caseSessionId") DO NOTHING
+  `;
+  return { completed: true };
+}
+function sessionGroupKey(caseId, studyGroupId) {
+  return `${caseId}:${studyGroupId}`;
+}
+async function closeStaleDuplicateInProgressSessions() {
+  const pool = getSql();
+  const rows = await pool`
+    SELECT id, "caseId", "studyGroupId", "currentStageOrder", "startedAt"
+    FROM "CaseSession"
+    WHERE status = 'IN_PROGRESS'
+    ORDER BY "currentStageOrder" DESC, "startedAt" DESC
+  `;
+  const seen = /* @__PURE__ */ new Set();
+  const keptIds = [];
+  const closeIds = [];
+  for (const row of rows) {
+    const key2 = sessionGroupKey(row.caseId, row.studyGroupId);
+    if (!seen.has(key2)) {
+      seen.add(key2);
+      keptIds.push(row.id);
+    } else {
+      closeIds.push(row.id);
+    }
+  }
+  for (const id of closeIds) {
+    try {
+      await forceCompleteSession(id);
+    } catch {
+      const now = /* @__PURE__ */ new Date();
+      await pool`
+        UPDATE "CaseSession"
+        SET status = 'COMPLETED', "completedAt" = ${now}
+        WHERE id = ${id} AND status = 'IN_PROGRESS'
+      `;
+      const oid = randomUUID();
+      await pool`
+        INSERT INTO "SessionOutcome" (id, "caseSessionId")
+        VALUES (${oid}, ${id})
+        ON CONFLICT ("caseSessionId") DO NOTHING
+      `;
+    }
+  }
+  return { closedIds: closeIds, keptIds };
+}
 
 // src/lib/session-list.ts
 var sessionListSelect = `
@@ -60135,7 +60337,20 @@ async function fetchSessionsList(opts) {
   } else {
     return [];
   }
-  return rows.map(mapSessionListRow);
+  return hideAbandonedOpenSiblings(rows.map(mapSessionListRow));
+}
+function hideAbandonedOpenSiblings(sessions) {
+  const openKeys = new Set(
+    sessions.filter((s) => s.status === "IN_PROGRESS").map((s) => `${s.caseId}:${s.studyGroupId}`)
+  );
+  return sessions.filter((s) => {
+    if (s.status !== "COMPLETED") return true;
+    if (!openKeys.has(`${s.caseId}:${s.studyGroupId}`)) return true;
+    return Boolean(s.outcome?.teacherGrade?.trim() || s.outcome?.finalizedAt);
+  });
+}
+async function sweepDuplicateOpenSessions() {
+  return closeStaleDuplicateInProgressSessions();
 }
 
 // src/lib/reference-data.ts
@@ -60212,7 +60427,7 @@ async function loadCaseSessionDetail(sessionId) {
   const pool = getSql();
   const sessRows = await pool`
     SELECT id, "caseId", "studyGroupId", "leaderUserId", status, "currentStageOrder",
-      "caseVersionSnapshot", "startedAt", "completedAt"
+      "caseVersionSnapshot", "startedAt", "completedAt", "joinToken"
     FROM "CaseSession" WHERE id = ${sessionId}
   `;
   const row = sessRows[0];
@@ -60386,165 +60601,6 @@ async function mergeAiPreliminaryScoresFromDb(outcome) {
   }
 }
 
-// src/lib/session-logic.ts
-import { randomUUID } from "crypto";
-async function loadActiveSessionStage(sessionId) {
-  const pool = getSql();
-  const rows = await pool`
-    SELECT
-      cs.id,
-      cs.status,
-      cs."currentStageOrder",
-      cs."caseId",
-      st.id AS "currentStageId"
-    FROM "CaseSession" cs
-    LEFT JOIN "CaseStage" st
-      ON st."caseId" = cs."caseId"
-     AND st."order" = cs."currentStageOrder"
-    WHERE cs.id = ${sessionId}
-    LIMIT 1
-  `;
-  const row = rows[0];
-  if (!row) throw new Error("SESSION_NOT_FOUND");
-  if (row.status !== "IN_PROGRESS") throw new Error("SESSION_CLOSED");
-  if (!row.currentStageId) throw new Error("STAGE_NOT_FOUND");
-  return {
-    session: {
-      id: row.id,
-      status: row.status,
-      currentStageOrder: row.currentStageOrder,
-      caseId: row.caseId
-    },
-    currentStageId: row.currentStageId
-  };
-}
-async function updateSessionDraft(sessionId, items) {
-  const pool = getSql();
-  const { session, currentStageId } = await loadActiveSessionStage(sessionId);
-  const subRows = await pool`
-    SELECT id, "submittedAt" FROM "StageSubmission"
-    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStageId}
-    LIMIT 1
-  `;
-  const submission = subRows[0];
-  if (!submission) throw new Error("SUBMISSION_NOT_FOUND");
-  if (submission.submittedAt) throw new Error("STAGE_ALREADY_SUBMITTED");
-  await pool.begin(async (txn) => {
-    const sql = asTransactionSql(pool, txn);
-    await sql`DELETE FROM "Hypothesis" WHERE "stageSubmissionId" = ${submission.id}`;
-    await sql`DELETE FROM "StudentQuestion" WHERE "stageSubmissionId" = ${submission.id}`;
-    for (let i = 0; i < items.hypotheses.length; i++) {
-      const h = items.hypotheses[i];
-      await sql`
-        INSERT INTO "Hypothesis" (id, "stageSubmissionId", text, "lineageId", sort)
-        VALUES (${randomUUID()}, ${submission.id}, ${h.text}, ${h.lineageId ?? randomUUID()}, ${i})
-      `;
-    }
-    for (let i = 0; i < items.questions.length; i++) {
-      const q = items.questions[i];
-      await sql`
-        INSERT INTO "StudentQuestion" (id, "stageSubmissionId", text, "lineageId", sort)
-        VALUES (${randomUUID()}, ${submission.id}, ${q.text}, ${q.lineageId ?? randomUUID()}, ${i})
-      `;
-    }
-  });
-  return { ok: true };
-}
-async function advanceSession(sessionId) {
-  const pool = getSql();
-  const { session, currentStageId } = await loadActiveSessionStage(sessionId);
-  const now = /* @__PURE__ */ new Date();
-  const subRows = await pool`
-    SELECT id, "submittedAt" FROM "StageSubmission"
-    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStageId}
-    LIMIT 1
-  `;
-  const currentSubmission = subRows[0];
-  if (!currentSubmission) throw new Error("SUBMISSION_NOT_FOUND");
-  if (currentSubmission.submittedAt) throw new Error("STAGE_ALREADY_SUBMITTED");
-  const hypRows = await pool`
-    SELECT id, text, "lineageId", sort FROM "Hypothesis"
-    WHERE "stageSubmissionId" = ${currentSubmission.id} ORDER BY sort
-  `;
-  const qRows = await pool`
-    SELECT id, text, "lineageId", sort FROM "StudentQuestion"
-    WHERE "stageSubmissionId" = ${currentSubmission.id} ORDER BY sort
-  `;
-  const [nextStage] = await pool`
-    SELECT id, "order"
-    FROM "CaseStage"
-    WHERE "caseId" = ${session.caseId} AND "order" > ${session.currentStageOrder}
-    ORDER BY "order" ASC
-    LIMIT 1
-  `;
-  await pool`UPDATE "StageSubmission" SET "submittedAt" = ${now} WHERE id = ${currentSubmission.id}`;
-  if (!nextStage) {
-    await pool`
-      UPDATE "CaseSession" SET status = 'COMPLETED', "completedAt" = ${now} WHERE id = ${session.id}
-    `;
-    const oid = randomUUID();
-    await pool`
-      INSERT INTO "SessionOutcome" (id, "caseSessionId")
-      VALUES (${oid}, ${session.id})
-      ON CONFLICT ("caseSessionId") DO NOTHING
-    `;
-    return { completed: true };
-  }
-  await pool`
-    UPDATE "CaseSession" SET "currentStageOrder" = ${nextStage.order} WHERE id = ${session.id}
-  `;
-  const newSubId = randomUUID();
-  await pool.begin(async (txn) => {
-    const sql = asTransactionSql(pool, txn);
-    await sql`
-      INSERT INTO "StageSubmission" (id, "caseSessionId", "caseStageId", "openedAt")
-      VALUES (${newSubId}, ${session.id}, ${nextStage.id}, ${now})
-    `;
-    for (let i = 0; i < hypRows.length; i++) {
-      const h = hypRows[i];
-      await sql`
-        INSERT INTO "Hypothesis" (id, "stageSubmissionId", text, "lineageId", sort)
-        VALUES (${randomUUID()}, ${newSubId}, ${h.text}, ${h.lineageId}, ${i})
-      `;
-    }
-    for (let i = 0; i < qRows.length; i++) {
-      const q = qRows[i];
-      await sql`
-        INSERT INTO "StudentQuestion" (id, "stageSubmissionId", text, "lineageId", sort)
-        VALUES (${randomUUID()}, ${newSubId}, ${q.text}, ${q.lineageId}, ${i})
-      `;
-    }
-  });
-  return { completed: false, nextStageOrder: nextStage.order };
-}
-async function forceCompleteSession(sessionId) {
-  const pool = getSql();
-  const { session, currentStageId } = await loadActiveSessionStage(sessionId);
-  const now = /* @__PURE__ */ new Date();
-  const subRows = await pool`
-    SELECT id, "submittedAt" FROM "StageSubmission"
-    WHERE "caseSessionId" = ${session.id} AND "caseStageId" = ${currentStageId}
-    LIMIT 1
-  `;
-  const currentSubmission = subRows[0];
-  if (!currentSubmission) throw new Error("SUBMISSION_NOT_FOUND");
-  if (!currentSubmission.submittedAt) {
-    await pool`
-      UPDATE "StageSubmission" SET "submittedAt" = ${now} WHERE id = ${currentSubmission.id}
-    `;
-  }
-  await pool`
-    UPDATE "CaseSession" SET status = 'COMPLETED', "completedAt" = ${now} WHERE id = ${session.id}
-  `;
-  const oid = randomUUID();
-  await pool`
-    INSERT INTO "SessionOutcome" (id, "caseSessionId")
-    VALUES (${oid}, ${session.id})
-    ON CONFLICT ("caseSessionId") DO NOTHING
-  `;
-  return { completed: true };
-}
-
 // src/lib/llm.ts
 var DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 function llmMaxOutputTokens() {
@@ -60554,7 +60610,7 @@ function llmMaxOutputTokens() {
 }
 async function deepseekGenerate(messages2, jsonMode) {
   const key2 = process.env.DEEPSEEK_API_KEY;
-  const model = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
+  const model = process.env.DEEPSEEK_MODEL ?? "deepseek-flash";
   if (!key2) {
     return { ok: false, missingKey: true, text: "" };
   }
@@ -60585,7 +60641,11 @@ async function deepseekGenerate(messages2, jsonMode) {
   const choice = data.choices?.[0];
   const text = choice?.message?.content ?? "";
   const truncated = choice?.finish_reason === "length";
-  return { ok: true, text, model: `deepseek/${model}`, truncated };
+  const usage = typeof data.usage?.prompt_tokens === "number" && typeof data.usage?.completion_tokens === "number" ? {
+    promptTokens: data.usage.prompt_tokens,
+    completionTokens: data.usage.completion_tokens
+  } : void 0;
+  return { ok: true, text, model: `deepseek/${model}`, truncated, usage };
 }
 async function chatCompletion(messages2, jsonMode = false) {
   const hasDeepseek = Boolean(process.env.DEEPSEEK_API_KEY?.trim());
@@ -60674,10 +60734,10 @@ function normalizeScores(data) {
     };
   }
   const sum = stages.reduce((s, x) => s + x.score, 0);
-  const avg = Math.round(sum / stages.length);
+  const avg2 = Math.round(sum / stages.length);
   return {
     stageScores: stages,
-    averageScore: avg
+    averageScore: avg2
   };
 }
 function num(v) {
@@ -60839,7 +60899,8 @@ async function runSessionAnalysis(input) {
     model = "error";
   }
   analysis = unwrapAnalysisMarkdownIfJsonWrapped(analysis);
-  return { analysis, model, scoresPayload };
+  const usage = llm.ok ? llm.usage ?? null : null;
+  return { analysis, model, scoresPayload, usage };
 }
 
 // src/lib/to-json-iso-utc.ts
@@ -60877,6 +60938,156 @@ function serializeSessionBriefForJson(s) {
     completedAt: toJsonIsoUtc(s.completedAt),
     outcome: s.outcome ? { ...s.outcome, finalizedAt: toJsonIsoUtc(s.outcome.finalizedAt) } : null
   };
+}
+
+// src/lib/join-token.ts
+import { randomBytes } from "crypto";
+var ALPHABET = "abcdefghijkmnopqrstuvwxyz23456789";
+function newJoinToken() {
+  const bytes = randomBytes(8);
+  let out = "";
+  for (const b2 of bytes) out += ALPHABET[b2 % ALPHABET.length];
+  return out;
+}
+function isJoinToken(value) {
+  return /^[abcdefghijkmnopqrstuvwxyz23456789]{8}$/.test(value);
+}
+async function ensureSessionJoinToken(sessionId) {
+  const pool = getSql();
+  const existing = await pool`
+    SELECT "joinToken" FROM "CaseSession" WHERE id = ${sessionId} LIMIT 1
+  `;
+  const current = existing[0]?.joinToken;
+  if (current) return current;
+  for (let i = 0; i < 6; i++) {
+    const token = newJoinToken();
+    const updated = await pool`
+      UPDATE "CaseSession"
+      SET "joinToken" = ${token}
+      WHERE id = ${sessionId} AND "joinToken" IS NULL
+      RETURNING "joinToken"
+    `;
+    if (updated[0]?.joinToken) return updated[0].joinToken;
+    const again = await pool`
+      SELECT "joinToken" FROM "CaseSession" WHERE id = ${sessionId} LIMIT 1
+    `;
+    if (again[0]?.joinToken) return again[0].joinToken;
+  }
+  throw new Error("JOIN_TOKEN_FAILED");
+}
+
+// src/lib/session-guest-ideas.ts
+import { randomUUID as randomUUID2 } from "crypto";
+var GUEST_IDEA_KINDS = ["HYPOTHESIS", "QUESTION"];
+var MAX_NAME = 60;
+var MAX_TEXT = 280;
+var MAX_OPEN_PER_GUEST_STAGE = 8;
+var MAX_PER_GUEST_SESSION = 30;
+function normalizeGuestName(raw) {
+  const name = raw.replace(/\s+/g, " ").trim();
+  if (name.length < 2 || name.length > MAX_NAME) return null;
+  return name;
+}
+function normalizeGuestText(raw) {
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (text.length < 1 || text.length > MAX_TEXT) return null;
+  return text;
+}
+function isGuestKey(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value
+  );
+}
+function serializeGuestIdea(row, stage) {
+  return {
+    id: row.id,
+    caseStageId: row.caseStageId,
+    guestKey: row.guestKey,
+    displayName: row.displayName,
+    kind: row.kind,
+    text: row.text,
+    createdAt: row.createdAt.toISOString(),
+    takenAt: row.takenAt ? row.takenAt.toISOString() : null,
+    ...stage ? { stageOrder: stage.order, stageTitle: stage.title } : {}
+  };
+}
+async function loadGuestIdeasForSession(sessionId, opts) {
+  const pool = getSql();
+  if (opts?.stageId && opts.guestKey) {
+    return pool`
+      SELECT id, "caseSessionId", "caseStageId", "guestKey", "displayName",
+        kind, text, "createdAt", "takenAt"
+      FROM "SessionGuestIdea"
+      WHERE "caseSessionId" = ${sessionId}
+        AND "caseStageId" = ${opts.stageId}
+        AND "guestKey" = ${opts.guestKey}
+      ORDER BY "createdAt" ASC
+    `;
+  }
+  if (opts?.stageId) {
+    return pool`
+      SELECT id, "caseSessionId", "caseStageId", "guestKey", "displayName",
+        kind, text, "createdAt", "takenAt"
+      FROM "SessionGuestIdea"
+      WHERE "caseSessionId" = ${sessionId}
+        AND "caseStageId" = ${opts.stageId}
+      ORDER BY "createdAt" ASC
+    `;
+  }
+  return pool`
+    SELECT id, "caseSessionId", "caseStageId", "guestKey", "displayName",
+      kind, text, "createdAt", "takenAt"
+    FROM "SessionGuestIdea"
+    WHERE "caseSessionId" = ${sessionId}
+    ORDER BY "createdAt" ASC
+  `;
+}
+async function insertGuestIdea(input) {
+  const pool = getSql();
+  const counts = await pool`
+    SELECT
+      COUNT(*) FILTER (
+        WHERE "caseStageId" = ${input.stageId} AND "takenAt" IS NULL
+      )::int AS "stageOpen",
+      COUNT(*)::int AS "sessionTotal"
+    FROM "SessionGuestIdea"
+    WHERE "caseSessionId" = ${input.sessionId}
+      AND "guestKey" = ${input.guestKey}
+  `;
+  const stageOpen = counts[0]?.stageOpen ?? 0;
+  const sessionTotal = counts[0]?.sessionTotal ?? 0;
+  if (stageOpen >= MAX_OPEN_PER_GUEST_STAGE) {
+    throw new Error("GUEST_STAGE_LIMIT");
+  }
+  if (sessionTotal >= MAX_PER_GUEST_SESSION) {
+    throw new Error("GUEST_SESSION_LIMIT");
+  }
+  const id = randomUUID2();
+  const rows = await pool`
+    INSERT INTO "SessionGuestIdea" (
+      id, "caseSessionId", "caseStageId", "guestKey", "displayName", kind, text
+    )
+    VALUES (
+      ${id}, ${input.sessionId}, ${input.stageId}, ${input.guestKey},
+      ${input.displayName}, ${input.kind}, ${input.text}
+    )
+    RETURNING id, "caseSessionId", "caseStageId", "guestKey", "displayName",
+      kind, text, "createdAt", "takenAt"
+  `;
+  const row = rows[0];
+  if (!row) throw new Error("GUEST_INSERT_FAILED");
+  return row;
+}
+async function markGuestIdeaTaken(sessionId, ideaId) {
+  const pool = getSql();
+  const rows = await pool`
+    UPDATE "SessionGuestIdea"
+    SET "takenAt" = COALESCE("takenAt", ${/* @__PURE__ */ new Date()})
+    WHERE id = ${ideaId} AND "caseSessionId" = ${sessionId}
+    RETURNING id, "caseSessionId", "caseStageId", "guestKey", "displayName",
+      kind, text, "createdAt", "takenAt"
+  `;
+  return rows[0] ?? null;
 }
 
 // server/session-routes.ts
@@ -60969,11 +61180,17 @@ async function buildSessionPayload(cs, session) {
     (s) => s.submittedAt || !completed && s.id === currentSubmission?.id
   ).sort((a, b2) => a.stage.order - b2.stage.order);
   const outcomeWithScores = await mergeAiPreliminaryScoresFromDb(cs.outcome);
+  const joinToken = cs.joinToken ?? await ensureSessionJoinToken(cs.id);
+  const guestIdeas = await loadGuestIdeasForSession(cs.id);
+  const stageById = new Map(
+    cs.case.stages.map((s) => [s.id, { order: s.order, title: s.title }])
+  );
   return {
     session: {
       id: cs.id,
       status: cs.status,
       currentStageOrder: cs.currentStageOrder,
+      joinToken,
       startedAt: toJsonIsoUtc(cs.startedAt),
       completedAt: toJsonIsoUtc(cs.completedAt),
       caseVersionSnapshot: cs.caseVersionSnapshot,
@@ -61003,12 +61220,16 @@ async function buildSessionPayload(cs, session) {
     timeline: timelineSubmissions.map((sub) => ({
       stageOrder: sub.stage.order,
       stageTitle: sub.stage.title,
+      learningGoals: sub.stage.learningGoals,
       submittedAt: toJsonIsoUtc(sub.submittedAt),
       openedAt: toJsonIsoUtc(sub.openedAt),
       hypotheses: sub.hypotheses,
       questions: sub.questions
     })),
     canEdit,
+    guestIdeas: guestIdeas.map(
+      (row) => serializeGuestIdea(row, stageById.get(row.caseStageId))
+    ),
     analytics: timelineSubmissions.map((sub) => ({
       stageOrder: sub.stage.order,
       openedAt: toJsonIsoUtc(sub.openedAt),
@@ -61021,6 +61242,7 @@ function registerSessionRoutes(app2) {
     const a = await requireUser(req);
     if (sendAuth(res, a)) return;
     const { session } = a;
+    await sweepDuplicateOpenSessions();
     const caseId = typeof req.query.caseId === "string" ? req.query.caseId : void 0;
     const sessions = await fetchSessionsList({
       role: session.user.role,
@@ -61091,7 +61313,7 @@ function registerSessionRoutes(app2) {
       if (existing[0]) {
         studyGroupId = existing[0].id;
       } else {
-        studyGroupId = randomUUID2();
+        studyGroupId = randomUUID3();
         await pool`
           INSERT INTO "StudyGroup" (id, name, "facultyId", "courseLevelId")
           VALUES (${studyGroupId}, ${name}, ${facultyId}, ${courseLevelId})
@@ -61142,13 +61364,14 @@ function registerSessionRoutes(app2) {
         });
       }
     }
-    const sessionId = randomUUID2();
+    const sessionId = randomUUID3();
+    const joinToken = newJoinToken();
     const poolConn = getSql();
     await poolConn.begin(async (txn) => {
       const sql = asTransactionSql(poolConn, txn);
       await sql`
         INSERT INTO "CaseSession" (
-          id, "caseId", "studyGroupId", "leaderUserId", status, "currentStageOrder", "caseVersionSnapshot"
+          id, "caseId", "studyGroupId", "leaderUserId", status, "currentStageOrder", "caseVersionSnapshot", "joinToken"
         )
         VALUES (
           ${sessionId},
@@ -61157,12 +61380,13 @@ function registerSessionRoutes(app2) {
           ${body.leaderUserId},
           'IN_PROGRESS',
           ${firstStage.order},
-          ${medicalCase.caseVersion}
+          ${medicalCase.caseVersion},
+          ${joinToken}
         )
       `;
       await sql`
         INSERT INTO "StageSubmission" (id, "caseSessionId", "caseStageId", "openedAt")
-        VALUES (${randomUUID2()}, ${sessionId}, ${firstStage.id}, ${/* @__PURE__ */ new Date()})
+        VALUES (${randomUUID3()}, ${sessionId}, ${firstStage.id}, ${/* @__PURE__ */ new Date()})
       `;
     });
     const sessOut = await poolConn`
@@ -61427,7 +61651,7 @@ function registerSessionRoutes(app2) {
       } else {
         await pool`
           INSERT INTO "SessionOutcome" (id, "caseSessionId", "teacherGrade", "teacherComment", "finalizedAt")
-          VALUES (${randomUUID2()}, ${csRow.id}, ${teacherGrade}, ${teacherComment}, ${finalizedAt})
+          VALUES (${randomUUID3()}, ${csRow.id}, ${teacherGrade}, ${teacherComment}, ${finalizedAt})
         `;
       }
       const [outcomeRow] = await pool`SELECT * FROM "SessionOutcome" WHERE "caseSessionId" = ${csRow.id}`;
@@ -61465,7 +61689,7 @@ function registerSessionRoutes(app2) {
         (a2, b2) => a2.stage.order - b2.stage.order
       );
       const teacherKey = session.user.role === "ADMIN" || session.user.role === "TEACHER" ? cs.case.teacherKey ?? "" : "";
-      const { analysis, model, scoresPayload } = await runSessionAnalysis({
+      const { analysis, model, scoresPayload, usage } = await runSessionAnalysis({
         stages: sortedSubs.map((sub) => ({
           stageOrder: sub.stage.order,
           stageTitle: sub.stage.title,
@@ -61481,7 +61705,7 @@ function registerSessionRoutes(app2) {
           id, "caseSessionId", "aiAnalysis", "aiModel", "aiPromptVersion", "aiPreliminaryScores"
         )
         VALUES (
-          ${randomUUID2()},
+          ${randomUUID3()},
           ${cs.id},
           ${analysis},
           ${model},
@@ -61494,6 +61718,12 @@ function registerSessionRoutes(app2) {
           "aiPromptVersion" = EXCLUDED."aiPromptVersion",
           "aiPreliminaryScores" = EXCLUDED."aiPreliminaryScores"
       `;
+      if (usage) {
+        await pool`
+          INSERT INTO "AiUsageLog" (id, "caseSessionId", model, "promptTokens", "completionTokens")
+          VALUES (${randomUUID3()}, ${cs.id}, ${model ?? "unknown"}, ${usage.promptTokens}, ${usage.completionTokens})
+        `;
+      }
       const outcomeRows = await pool`SELECT * FROM "SessionOutcome" WHERE "caseSessionId" = ${cs.id}`;
       const row = outcomeRows[0];
       res.json({
@@ -61501,10 +61731,221 @@ function registerSessionRoutes(app2) {
       });
     }
   );
+  app2.delete(
+    "/api/sessions/:sessionId",
+    async (req, res) => {
+      const a = await requireUser(req);
+      if (sendAuth(res, a)) return;
+      const { session } = a;
+      const sessionId = routeParam(req.params.sessionId);
+      if (!sessionId) return errorResponse(res, "\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 id \u0441\u0435\u0441\u0441\u0438\u0438", 400);
+      if (!isStaff(session.user.role)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      const cs = await loadCaseSessionForPatch(sessionId);
+      if (!cs) return errorResponse(res, "\u0421\u0435\u0441\u0441\u0438\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
+      if (session.user.role === "TEACHER" && !canManageCase(session, cs.case.departmentId)) {
+        return errorResponse(res, "\u041D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u0430", 403);
+      }
+      const pool = getSql();
+      await pool`DELETE FROM "CaseSession" WHERE id = ${sessionId}`;
+      res.json({ ok: true });
+    }
+  );
+}
+
+// server/join-routes.ts
+var ideaBodySchema = external_exports.object({
+  guestKey: external_exports.string(),
+  displayName: external_exports.string(),
+  kind: external_exports.enum(GUEST_IDEA_KINDS),
+  text: external_exports.string()
+});
+async function loadJoinSession(token) {
+  const pool = getSql();
+  const rows = await pool`
+    SELECT
+      cs.id,
+      cs.status,
+      cs."currentStageOrder",
+      c.title AS "caseTitle",
+      sg.name AS "groupName",
+      f.name AS "facultyName",
+      st.id AS "stageId",
+      st.title AS "stageTitle",
+      (SELECT COUNT(*)::int FROM "CaseStage" WHERE "caseId" = c.id) AS "totalStages"
+    FROM "CaseSession" cs
+    JOIN "Case" c ON c.id = cs."caseId"
+    JOIN "StudyGroup" sg ON sg.id = cs."studyGroupId"
+    JOIN "Faculty" f ON f.id = sg."facultyId"
+    LEFT JOIN "CaseStage" st
+      ON st."caseId" = cs."caseId" AND st."order" = cs."currentStageOrder"
+    WHERE cs."joinToken" = ${token}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+async function loadStageBlocks(stageId) {
+  const pool = getSql();
+  return pool`
+    SELECT id, "blockType", "rawText", "formattedContent", "imageUrl", "imageAlt"
+    FROM "StageBlock"
+    WHERE "caseStageId" = ${stageId}
+    ORDER BY "order" ASC
+  `;
+}
+function guestKeyFromQuery(req) {
+  const raw = req.query.guestKey;
+  if (typeof raw !== "string" || !isGuestKey(raw)) return null;
+  return raw;
+}
+function registerJoinRoutes(app2) {
+  app2.get("/api/join/:token", async (req, res) => {
+    const token = routeParam(req.params.token);
+    if (!token || !isJoinToken(token)) {
+      return errorResponse(res, "\u0421\u0441\u044B\u043B\u043A\u0430 \u043D\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u044C\u043D\u0430", 400);
+    }
+    const cs = await loadJoinSession(token);
+    if (!cs) return errorResponse(res, "\u0417\u0430\u043D\u044F\u0442\u0438\u0435 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E", 404);
+    const guestKey = guestKeyFromQuery(req);
+    const blocks = cs.stageId ? await loadStageBlocks(cs.stageId) : [];
+    const ownIdeas = cs.stageId && guestKey ? await loadGuestIdeasForSession(cs.id, {
+      stageId: cs.stageId,
+      guestKey
+    }) : [];
+    res.json({
+      status: cs.status,
+      caseTitle: cs.caseTitle,
+      groupName: cs.groupName,
+      facultyName: cs.facultyName,
+      currentStageOrder: cs.currentStageOrder,
+      totalStages: cs.totalStages,
+      currentStage: cs.stageId && cs.stageTitle ? {
+        id: cs.stageId,
+        order: cs.currentStageOrder,
+        title: cs.stageTitle,
+        blocks
+      } : null,
+      ownIdeas: ownIdeas.map(serializeGuestIdea)
+    });
+  });
+  app2.post("/api/join/:token/ideas", async (req, res) => {
+    const token = routeParam(req.params.token);
+    if (!token || !isJoinToken(token)) {
+      return errorResponse(res, "\u0421\u0441\u044B\u043B\u043A\u0430 \u043D\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u044C\u043D\u0430", 400);
+    }
+    let body;
+    try {
+      body = ideaBodySchema.parse(req.body);
+    } catch {
+      return errorResponse(res, "\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435", 400);
+    }
+    if (!isGuestKey(body.guestKey)) {
+      return errorResponse(res, "\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043A\u043B\u044E\u0447 \u0433\u043E\u0441\u0442\u044F", 400);
+    }
+    const displayName = normalizeGuestName(body.displayName);
+    if (!displayName) {
+      return errorResponse(res, "\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u0438\u043C\u044F \u2014 \u043E\u0442 2 \u0434\u043E 60 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432", 400);
+    }
+    const text = normalizeGuestText(body.text);
+    if (!text) {
+      return errorResponse(res, "\u0422\u0435\u043A\u0441\u0442 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u043A\u043E\u0440\u043E\u0442\u043A\u0438\u0439 \u0438\u043B\u0438 \u0434\u043B\u0438\u043D\u043D\u044B\u0439", 400);
+    }
+    const cs = await loadJoinSession(token);
+    if (!cs) return errorResponse(res, "\u0417\u0430\u043D\u044F\u0442\u0438\u0435 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E", 404);
+    if (cs.status !== "IN_PROGRESS") {
+      return errorResponse(res, "\u0417\u0430\u043D\u044F\u0442\u0438\u0435 \u0443\u0436\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u043E", 409);
+    }
+    if (!cs.stageId) return errorResponse(res, "\u042D\u0442\u0430\u043F \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D", 400);
+    try {
+      const row = await insertGuestIdea({
+        sessionId: cs.id,
+        stageId: cs.stageId,
+        guestKey: body.guestKey,
+        displayName,
+        kind: body.kind,
+        text
+      });
+      res.status(201).json({ idea: serializeGuestIdea(row) });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      if (msg === "GUEST_STAGE_LIMIT") {
+        return errorResponse(
+          res,
+          "\u041D\u0430 \u044D\u0442\u043E\u043C \u044D\u0442\u0430\u043F\u0435 \u0443\u0436\u0435 \u0434\u043E\u0441\u0442\u0430\u0442\u043E\u0447\u043D\u043E \u0432\u0430\u0448\u0438\u0445 \u0438\u0434\u0435\u0439",
+          429
+        );
+      }
+      if (msg === "GUEST_SESSION_LIMIT") {
+        return errorResponse(res, "\u041B\u0438\u043C\u0438\u0442 \u0438\u0434\u0435\u0439 \u043D\u0430 \u044D\u0442\u043E \u0437\u0430\u043D\u044F\u0442\u0438\u0435 \u0438\u0441\u0447\u0435\u0440\u043F\u0430\u043D", 429);
+      }
+      throw err;
+    }
+  });
+  app2.get(
+    "/api/sessions/:sessionId/guest-ideas",
+    async (req, res) => {
+      const a = await requireUser(req);
+      if (sendAuth(res, a)) return;
+      const sessionId = routeParam(req.params.sessionId);
+      if (!sessionId) return errorResponse(res, "\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 id \u0441\u0435\u0441\u0441\u0438\u0438", 400);
+      const pool = getSql();
+      const rows = await pool`
+        SELECT cs.id, c."departmentId", cs.status
+        FROM "CaseSession" cs
+        JOIN "Case" c ON c.id = cs."caseId"
+        WHERE cs.id = ${sessionId}
+        LIMIT 1
+      `;
+      const cs = rows[0];
+      if (!cs) return errorResponse(res, "\u0421\u0435\u0441\u0441\u0438\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
+      if (a.session.user.role === "TEACHER" && !canManageCase(a.session, cs.departmentId)) {
+        return errorResponse(res, "\u041D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u0430", 403);
+      }
+      const joinToken = await ensureSessionJoinToken(sessionId);
+      const ideas = await loadGuestIdeasForSession(sessionId);
+      res.json({
+        joinToken,
+        ideas: ideas.map((row) => serializeGuestIdea(row))
+      });
+    }
+  );
+  app2.patch(
+    "/api/sessions/:sessionId/guest-ideas/:ideaId",
+    async (req, res) => {
+      const a = await requireUser(req);
+      if (sendAuth(res, a)) return;
+      const sessionId = routeParam(req.params.sessionId);
+      const ideaId = routeParam(req.params.ideaId);
+      if (!sessionId || !ideaId) {
+        return errorResponse(res, "\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 id", 400);
+      }
+      const action = req.body?.action;
+      if (action !== "take") {
+        return errorResponse(res, "\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435", 400);
+      }
+      const pool = getSql();
+      const rows = await pool`
+        SELECT c."departmentId"
+        FROM "CaseSession" cs
+        JOIN "Case" c ON c.id = cs."caseId"
+        WHERE cs.id = ${sessionId}
+        LIMIT 1
+      `;
+      const cs = rows[0];
+      if (!cs) return errorResponse(res, "\u0421\u0435\u0441\u0441\u0438\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
+      if (a.session.user.role === "TEACHER" && !canManageCase(a.session, cs.departmentId)) {
+        return errorResponse(res, "\u041D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u0430", 403);
+      }
+      const idea = await markGuestIdeaTaken(sessionId, ideaId);
+      if (!idea) return errorResponse(res, "\u0418\u0434\u0435\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
+      res.json({ idea: serializeGuestIdea(idea) });
+    }
+  );
 }
 
 // server/misc-routes.ts
-import { randomUUID as randomUUID3 } from "crypto";
+import { randomUUID as randomUUID4 } from "crypto";
 
 // src/lib/sanitize-case-html.ts
 var import_sanitize_html = __toESM(require_sanitize_html(), 1);
@@ -61748,7 +62189,7 @@ function registerMiscRoutes(app2) {
     }
     const pool = getSql();
     if (body.kind === "department") {
-      const id2 = randomUUID3();
+      const id2 = randomUUID4();
       await pool`
         INSERT INTO "Department" (id, name) VALUES (${id2}, ${body.name.trim()})
       `;
@@ -61758,7 +62199,7 @@ function registerMiscRoutes(app2) {
       return res.json({ item: row2 });
     }
     if (body.kind === "faculty") {
-      const id2 = randomUUID3();
+      const id2 = randomUUID4();
       await pool`INSERT INTO "Faculty" (id, name) VALUES (${id2}, ${body.name.trim()})`;
       const [row2] = await pool`
         SELECT id, name FROM "Faculty" WHERE id = ${id2}
@@ -61769,7 +62210,7 @@ function registerMiscRoutes(app2) {
       SELECT MAX("sort") AS m FROM "CourseLevel"
     `;
     const nextSort = body.sort ?? (maxRows[0]?.m != null ? maxRows[0].m + 1 : 0);
-    const id = randomUUID3();
+    const id = randomUUID4();
     await pool`
       INSERT INTO "CourseLevel" (id, name, sort) VALUES (${id}, ${body.name.trim()}, ${nextSort})
     `;
@@ -62010,7 +62451,38 @@ function registerMiscRoutes(app2) {
 
 // server/admin-routes.ts
 var import_bcryptjs = __toESM(require_bcryptjs(), 1);
-import { randomUUID as randomUUID4 } from "crypto";
+import { randomUUID as randomUUID5 } from "crypto";
+
+// src/lib/ai-cost.ts
+function envNumber(name, fallback) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+function priceInputPerMillion() {
+  return envNumber("DEEPSEEK_PRICE_INPUT_PER_1M", 0.15);
+}
+function priceOutputPerMillion() {
+  return envNumber("DEEPSEEK_PRICE_OUTPUT_PER_1M", 0.6);
+}
+function costMarkupMultiplier() {
+  return envNumber("AI_COST_MARKUP_MULTIPLIER", 10);
+}
+function computeAiCost(usage) {
+  const inputCost = usage.promptTokens / 1e6 * priceInputPerMillion();
+  const outputCost = usage.completionTokens / 1e6 * priceOutputPerMillion();
+  const actualCostUsd = inputCost + outputCost;
+  const billedCostUsd = actualCostUsd * costMarkupMultiplier();
+  return {
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    actualCostUsd,
+    billedCostUsd
+  };
+}
+
+// server/admin-routes.ts
 var loginSchema = external_exports.string().min(1).max(128).transform((s) => s.trim());
 var createUserSchema = external_exports.object({
   login: loginSchema,
@@ -62055,7 +62527,7 @@ function registerAdminRoutes(app2) {
     } catch {
       return errorResponse(res, "\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0434\u0430\u043D\u043D\u044B\u0435", 400);
     }
-    const id = randomUUID4();
+    const id = randomUUID5();
     const hash = await import_bcryptjs.default.hash(body.password, 10);
     const sql = getSql();
     try {
@@ -62156,6 +62628,73 @@ function registerAdminRoutes(app2) {
     await sql`DELETE FROM "StudyGroupMember" WHERE "userId" = ${userId}`;
     await sql`DELETE FROM "User" WHERE id = ${userId}`;
     res.json({ ok: true });
+  });
+  app2.get("/api/admin/ai-usage", async (req, res) => {
+    const a = await requireUser(req);
+    if (sendAuth(res, a)) return;
+    if (a.session.user.role !== "ADMIN") {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const sql = getSql();
+    const totalsRows = await sql`
+      SELECT
+        COALESCE(SUM("promptTokens"), 0)::int AS "promptTokens",
+        COALESCE(SUM("completionTokens"), 0)::int AS "completionTokens",
+        COUNT(*)::int AS "callCount"
+      FROM "AiUsageLog"
+    `;
+    const totals = totalsRows[0] ?? { promptTokens: 0, completionTokens: 0, callCount: 0 };
+    const byCaseRows = await sql`
+      SELECT
+        c.id AS "caseId",
+        c.title AS "caseTitle",
+        COALESCE(SUM(u."promptTokens"), 0)::int AS "promptTokens",
+        COALESCE(SUM(u."completionTokens"), 0)::int AS "completionTokens",
+        COUNT(u.id)::int AS "callCount",
+        COUNT(DISTINCT u."caseSessionId")::int AS "sessionCount"
+      FROM "AiUsageLog" u
+      JOIN "CaseSession" cs ON cs.id = u."caseSessionId"
+      JOIN "Case" c ON c.id = cs."caseId"
+      GROUP BY c.id, c.title
+      ORDER BY SUM(u."promptTokens" + u."completionTokens") DESC
+    `;
+    const bySessionRows = await sql`
+      SELECT
+        cs.id AS "caseSessionId",
+        c.title AS "caseTitle",
+        sg.name AS "studyGroupName",
+        cs."startedAt",
+        COALESCE(SUM(u."promptTokens"), 0)::int AS "promptTokens",
+        COALESCE(SUM(u."completionTokens"), 0)::int AS "completionTokens",
+        COUNT(u.id)::int AS "callCount"
+      FROM "AiUsageLog" u
+      JOIN "CaseSession" cs ON cs.id = u."caseSessionId"
+      JOIN "Case" c ON c.id = cs."caseId"
+      JOIN "StudyGroup" sg ON sg.id = cs."studyGroupId"
+      GROUP BY cs.id, c.title, sg.name, cs."startedAt"
+      ORDER BY cs."startedAt" DESC
+      LIMIT 50
+    `;
+    res.json({
+      pricing: {
+        inputPerMillionUsd: priceInputPerMillion(),
+        outputPerMillionUsd: priceOutputPerMillion(),
+        markupMultiplier: costMarkupMultiplier()
+      },
+      totals: {
+        ...totals,
+        ...computeAiCost(totals)
+      },
+      byCase: byCaseRows.map((r) => ({
+        ...r,
+        ...computeAiCost(r)
+      })),
+      bySession: bySessionRows.map((r) => ({
+        ...r,
+        startedAt: r.startedAt,
+        ...computeAiCost(r)
+      }))
+    });
   });
 }
 
@@ -62390,6 +62929,574 @@ async function fetchCaseStatsForDepartment(departmentId) {
   `;
 }
 
+// src/lib/guest-student-scores.ts
+function ideaKey(idea) {
+  const key2 = idea.guestKey?.trim();
+  if (key2) return key2;
+  return `name:${idea.displayName.trim().toLowerCase()}`;
+}
+function scoreGuestStudent(ideas) {
+  const hypos = ideas.filter(
+    (i) => i.kind === "HYPOTHESIS" && i.text.trim().length > 0
+  );
+  const questions = ideas.filter(
+    (i) => i.kind === "QUESTION" && i.text.trim().length > 0
+  );
+  const h = hypos.length;
+  const q = questions.length;
+  if (h === 0 && q === 0) return 0;
+  let score;
+  if (h >= 1 && h <= 2 && q === 0) {
+    score = 10 + h * 5;
+  } else if (h >= 3 && q === 0) {
+    score = Math.min(40, 28 + (h - 3) * 3);
+  } else if (h === 0 && q >= 1) {
+    score = Math.min(28, 15 + (q - 1) * 4);
+  } else {
+    score = Math.min(78, 48 + Math.min(h, 5) * 4 + Math.min(q, 4) * 3);
+  }
+  const stages = new Set(
+    ideas.map((i) => i.caseStageId || String(i.stageOrder ?? "")).filter(Boolean)
+  );
+  score += Math.min(Math.max(0, stages.size - 1), 3) * 4;
+  const taken = ideas.filter((i) => i.takenAt).length;
+  score += Math.min(taken, 3) * 2;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+function groupGuestStudents(ideas) {
+  const buckets = /* @__PURE__ */ new Map();
+  ideas.forEach((idea) => {
+    const key2 = ideaKey(idea);
+    const list = buckets.get(key2) ?? [];
+    list.push(idea);
+    buckets.set(key2, list);
+  });
+  const students = [];
+  for (const [guestKey, list] of buckets) {
+    const lastName = [...list].reverse().find((i) => i.displayName.trim())?.displayName ?? "\u0411\u0435\u0437 \u0438\u043C\u0435\u043D\u0438";
+    students.push({
+      guestKey,
+      displayName: lastName,
+      score: scoreGuestStudent(list),
+      hypothesisCount: list.filter((i) => i.kind === "HYPOTHESIS").length,
+      questionCount: list.filter((i) => i.kind === "QUESTION").length,
+      takenCount: list.filter((i) => i.takenAt).length,
+      stageCount: new Set(list.map((i) => i.caseStageId).filter(Boolean)).size,
+      ideas: list
+    });
+  }
+  return students.sort((a, b2) => {
+    if (b2.score !== a.score) return b2.score - a.score;
+    return a.displayName.localeCompare(b2.displayName, "ru");
+  });
+}
+
+// src/lib/teacher-analytics.ts
+function parseScore(raw) {
+  if (raw == null) return null;
+  const t = String(raw).trim().replace(",", ".");
+  if (!/^\d+(\.\d+)?$/.test(t)) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+  return Math.round(n);
+}
+var MAX_LESSON_MIN = 8 * 60;
+function minutesBetween(from, to) {
+  if (!from || !to) return null;
+  const ms = to.getTime() - from.getTime();
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const min = Math.round(ms / 6e4);
+  if (min > MAX_LESSON_MIN) return null;
+  return min;
+}
+function avg(nums) {
+  if (nums.length === 0) return null;
+  return Math.round(nums.reduce((a, b2) => a + b2, 0) / nums.length);
+}
+function bucketLabel(score) {
+  if (score < 41) return "0\u201340";
+  if (score < 61) return "41\u201360";
+  if (score < 81) return "61\u201380";
+  return "81\u2013100";
+}
+function emptyBuckets() {
+  return ["0\u201340", "41\u201360", "61\u201380", "81\u2013100"].map((label) => ({
+    label,
+    teacher: 0,
+    ai: 0,
+    student: 0
+  }));
+}
+async function fetchTeacherAnalytics(opts) {
+  const pool = getSql();
+  const dept = await pool`
+    SELECT id, name FROM "Department" WHERE id = ${opts.departmentId} LIMIT 1
+  `;
+  const department = dept[0];
+  if (!department) return null;
+  const groupFilter = opts.groupId?.trim() || null;
+  const caseFilter = opts.caseId?.trim() || null;
+  const [sessions, allGroups, allCases, casesTotal] = await Promise.all([
+    pool`
+      SELECT
+        cs.id,
+        cs.status,
+        cs."startedAt",
+        cs."completedAt",
+        c.id AS "caseId",
+        c.title AS "caseTitle",
+        sg.id AS "studyGroupId",
+        sg.name AS "groupName",
+        o."teacherGrade",
+        o."aiPreliminaryScores"->>'averageScore' AS "aiScoreRaw"
+      FROM "CaseSession" cs
+      JOIN "Case" c ON c.id = cs."caseId"
+      JOIN "StudyGroup" sg ON sg.id = cs."studyGroupId"
+      LEFT JOIN "SessionOutcome" o ON o."caseSessionId" = cs.id
+      WHERE c."departmentId" = ${opts.departmentId}
+        AND (${groupFilter}::text IS NULL OR cs."studyGroupId" = ${groupFilter})
+        AND (${caseFilter}::text IS NULL OR cs."caseId" = ${caseFilter})
+      ORDER BY cs."startedAt" DESC
+    `,
+    pool`
+      SELECT DISTINCT sg.id, sg.name AS label
+      FROM "CaseSession" cs
+      JOIN "Case" c ON c.id = cs."caseId"
+      JOIN "StudyGroup" sg ON sg.id = cs."studyGroupId"
+      WHERE c."departmentId" = ${opts.departmentId}
+      ORDER BY sg.name ASC
+    `,
+    pool`
+      SELECT c.id, c.title AS label
+      FROM "Case" c
+      WHERE c."departmentId" = ${opts.departmentId}
+      ORDER BY c.title ASC
+    `,
+    pool`
+      SELECT COUNT(*)::int AS n
+      FROM "Case" c
+      WHERE c."departmentId" = ${opts.departmentId}
+    `
+  ]);
+  const ids = sessions.map((s) => s.id);
+  const hypoMap = /* @__PURE__ */ new Map();
+  const qMap = /* @__PURE__ */ new Map();
+  const ideasBySession = /* @__PURE__ */ new Map();
+  const stagesBySession = /* @__PURE__ */ new Map();
+  if (ids.length > 0) {
+    const [hypos, questions, ideas, stages2] = await Promise.all([
+      pool`
+        SELECT s."caseSessionId", COUNT(*)::int AS n
+        FROM "Hypothesis" h
+        JOIN "StageSubmission" s ON s.id = h."stageSubmissionId"
+        WHERE s."caseSessionId" = ANY(${pool.array(ids)})
+          AND NULLIF(TRIM(h.text), '') IS NOT NULL
+        GROUP BY s."caseSessionId"
+      `,
+      pool`
+        SELECT s."caseSessionId", COUNT(*)::int AS n
+        FROM "StudentQuestion" q
+        JOIN "StageSubmission" s ON s.id = q."stageSubmissionId"
+        WHERE s."caseSessionId" = ANY(${pool.array(ids)})
+          AND NULLIF(TRIM(q.text), '') IS NOT NULL
+        GROUP BY s."caseSessionId"
+      `,
+      pool`
+        SELECT
+          gi.id, gi."caseSessionId", gi."caseStageId", gi."guestKey",
+          gi."displayName", gi.kind, gi.text, gi."createdAt", gi."takenAt",
+          st."order" AS "stageOrder", st.title AS "stageTitle"
+        FROM "SessionGuestIdea" gi
+        JOIN "CaseStage" st ON st.id = gi."caseStageId"
+        WHERE gi."caseSessionId" = ANY(${pool.array(ids)})
+        ORDER BY gi."createdAt" ASC
+      `,
+      pool`
+        SELECT
+          ss."caseSessionId",
+          st."caseId",
+          c.title AS "caseTitle",
+          st."order" AS "stageOrder",
+          st.title AS "stageTitle",
+          ss."openedAt",
+          ss."submittedAt",
+          (
+            SELECT COUNT(*)::int
+            FROM "Hypothesis" h
+            WHERE h."stageSubmissionId" = ss.id
+              AND NULLIF(TRIM(h.text), '') IS NOT NULL
+          ) AS "officialHypos",
+          (
+            SELECT COUNT(*)::int
+            FROM "StudentQuestion" q
+            WHERE q."stageSubmissionId" = ss.id
+              AND NULLIF(TRIM(q.text), '') IS NOT NULL
+          ) AS "officialQuestions"
+        FROM "StageSubmission" ss
+        JOIN "CaseStage" st ON st.id = ss."caseStageId"
+        JOIN "Case" c ON c.id = st."caseId"
+        WHERE ss."caseSessionId" = ANY(${pool.array(ids)})
+        ORDER BY st."order" ASC
+      `
+    ]);
+    for (const row of hypos) hypoMap.set(row.caseSessionId, row.n);
+    for (const row of questions) qMap.set(row.caseSessionId, row.n);
+    for (const idea of ideas) {
+      const list = ideasBySession.get(idea.caseSessionId) ?? [];
+      list.push(idea);
+      ideasBySession.set(idea.caseSessionId, list);
+    }
+    for (const stage of stages2) {
+      const list = stagesBySession.get(stage.caseSessionId) ?? [];
+      list.push(stage);
+      stagesBySession.set(stage.caseSessionId, list);
+    }
+  }
+  const sessionRows = sessions.map((s) => {
+    const ideas = ideasBySession.get(s.id) ?? [];
+    const students2 = groupGuestStudents(
+      ideas.map((i) => ({
+        guestKey: i.guestKey,
+        displayName: i.displayName,
+        kind: i.kind,
+        text: i.text,
+        takenAt: i.takenAt ? i.takenAt.toISOString() : null,
+        caseStageId: i.caseStageId,
+        stageOrder: i.stageOrder
+      }))
+    );
+    const durationMin = s.status === "COMPLETED" ? minutesBetween(s.startedAt, s.completedAt) : minutesBetween(s.startedAt, /* @__PURE__ */ new Date());
+    return {
+      id: s.id,
+      status: s.status,
+      startedAt: toJsonIsoUtc(s.startedAt) ?? s.startedAt.toISOString(),
+      completedAt: toJsonIsoUtc(s.completedAt) ?? null,
+      durationMin,
+      caseId: s.caseId,
+      caseTitle: s.caseTitle,
+      studyGroupId: s.studyGroupId,
+      groupName: s.groupName,
+      teacherGrade: parseScore(s.teacherGrade),
+      aiScore: parseScore(s.aiScoreRaw),
+      officialHypos: hypoMap.get(s.id) ?? 0,
+      officialQuestions: qMap.get(s.id) ?? 0,
+      guestStudents: students2.length,
+      guestIdeas: ideas.length,
+      takenIdeas: ideas.filter((i) => i.takenAt).length,
+      avgStudentScore: avg(students2.map((st) => st.score))
+    };
+  });
+  const studentsByName = /* @__PURE__ */ new Map();
+  for (const session of sessionRows) {
+    const ideas = ideasBySession.get(session.id) ?? [];
+    const grouped = groupGuestStudents(
+      ideas.map((i) => ({
+        guestKey: i.guestKey,
+        displayName: i.displayName,
+        kind: i.kind,
+        text: i.text,
+        takenAt: i.takenAt ? i.takenAt.toISOString() : null,
+        caseStageId: i.caseStageId,
+        stageOrder: i.stageOrder
+      }))
+    );
+    for (const student of grouped) {
+      const key2 = student.displayName.trim().toLowerCase();
+      const bucket = studentsByName.get(key2) ?? {
+        displayName: student.displayName,
+        scores: [],
+        sessions: /* @__PURE__ */ new Set(),
+        hypothesisCount: 0,
+        questionCount: 0,
+        takenCount: 0,
+        lastSessionAt: null,
+        lastCaseTitle: null
+      };
+      bucket.scores.push(student.score);
+      bucket.sessions.add(session.id);
+      bucket.hypothesisCount += student.hypothesisCount;
+      bucket.questionCount += student.questionCount;
+      bucket.takenCount += student.takenCount;
+      if (!bucket.lastSessionAt || session.startedAt > bucket.lastSessionAt) {
+        bucket.lastSessionAt = session.startedAt;
+        bucket.lastCaseTitle = session.caseTitle;
+      }
+      studentsByName.set(key2, bucket);
+    }
+  }
+  const students = [...studentsByName.values()].map((b2) => ({
+    displayName: b2.displayName,
+    sessionCount: b2.sessions.size,
+    hypothesisCount: b2.hypothesisCount,
+    questionCount: b2.questionCount,
+    takenCount: b2.takenCount,
+    avgScore: avg(b2.scores) ?? 0,
+    lastSessionAt: b2.lastSessionAt,
+    lastCaseTitle: b2.lastCaseTitle
+  })).sort((a, b2) => {
+    if (b2.avgScore !== a.avgScore) return b2.avgScore - a.avgScore;
+    return a.displayName.localeCompare(b2.displayName, "ru");
+  });
+  const stageAcc = /* @__PURE__ */ new Map();
+  for (const session of sessionRows) {
+    const ideas = ideasBySession.get(session.id) ?? [];
+    for (const stage of stagesBySession.get(session.id) ?? []) {
+      const key2 = `${stage.caseId}:${stage.stageOrder}`;
+      const acc = stageAcc.get(key2) ?? {
+        caseId: stage.caseId,
+        caseTitle: stage.caseTitle,
+        stageOrder: stage.stageOrder,
+        stageTitle: stage.stageTitle,
+        durations: [],
+        hypos: [],
+        questions: [],
+        guestIdeas: 0,
+        takenIdeas: 0,
+        sessions: /* @__PURE__ */ new Set()
+      };
+      acc.sessions.add(session.id);
+      const dur = minutesBetween(stage.openedAt, stage.submittedAt);
+      if (dur != null) acc.durations.push(dur);
+      acc.hypos.push(stage.officialHypos);
+      acc.questions.push(stage.officialQuestions);
+      const stageIdeas = ideas.filter((i) => i.stageOrder === stage.stageOrder);
+      acc.guestIdeas += stageIdeas.length;
+      acc.takenIdeas += stageIdeas.filter((i) => i.takenAt).length;
+      stageAcc.set(key2, acc);
+    }
+  }
+  const stages = [...stageAcc.values()].map((s) => ({
+    caseId: s.caseId,
+    caseTitle: s.caseTitle,
+    stageOrder: s.stageOrder,
+    stageTitle: s.stageTitle,
+    sessions: s.sessions.size,
+    avgDurationMin: avg(s.durations),
+    avgOfficialHypos: avg(s.hypos) ?? 0,
+    avgOfficialQuestions: avg(s.questions) ?? 0,
+    guestIdeas: s.guestIdeas,
+    takenIdeas: s.takenIdeas
+  })).sort((a, b2) => {
+    const t = a.caseTitle.localeCompare(b2.caseTitle, "ru");
+    if (t !== 0) return t;
+    return a.stageOrder - b2.stageOrder;
+  });
+  const gradeBuckets = emptyBuckets();
+  const bump = (kind, score) => {
+    if (score == null) return;
+    const row = gradeBuckets.find((b2) => b2.label === bucketLabel(score));
+    if (row) row[kind] += 1;
+  };
+  for (const s of sessionRows) {
+    bump("teacher", s.teacherGrade);
+    bump("ai", s.aiScore);
+    bump("student", s.avgStudentScore);
+  }
+  const completed = sessionRows.filter((s) => s.status === "COMPLETED");
+  const kpis = {
+    departmentId: department.id,
+    departmentName: department.name,
+    sessionsTotal: sessionRows.length,
+    sessionsCompleted: completed.length,
+    sessionsInProgress: sessionRows.filter((s) => s.status === "IN_PROGRESS").length,
+    needGrade: completed.filter((s) => s.teacherGrade == null).length,
+    uniqueStudyGroups: new Set(sessionRows.map((s) => s.studyGroupId)).size,
+    casesTotal: casesTotal[0]?.n ?? allCases.length,
+    sessionsWithTeacherGrade: sessionRows.filter((s) => s.teacherGrade != null).length,
+    sessionsWithAiAnalysis: sessionRows.filter((s) => s.aiScore != null).length,
+    avgTeacherScore: avg(
+      sessionRows.flatMap((s) => s.teacherGrade != null ? [s.teacherGrade] : [])
+    ),
+    avgAiScore: avg(
+      sessionRows.flatMap((s) => s.aiScore != null ? [s.aiScore] : [])
+    ),
+    guestStudents: students.length,
+    guestIdeas: sessionRows.reduce((n, s) => n + s.guestIdeas, 0),
+    takenIdeas: sessionRows.reduce((n, s) => n + s.takenIdeas, 0),
+    avgStudentScore: avg(students.map((s) => s.avgScore)),
+    avgDurationMin: avg(
+      completed.flatMap((s) => s.durationMin != null ? [s.durationMin] : [])
+    )
+  };
+  return {
+    kpis,
+    filters: { groups: allGroups, cases: allCases },
+    sessions: sessionRows,
+    students,
+    stages,
+    gradeBuckets
+  };
+}
+async function fetchAnalyticsSessionDetail(sessionId, departmentId, isAdmin) {
+  const pool = getSql();
+  const rows = await pool`
+    SELECT
+      cs.id,
+      cs.status,
+      cs."startedAt",
+      cs."completedAt",
+      c.id AS "caseId",
+      c.title AS "caseTitle",
+      c."departmentId",
+      sg.id AS "studyGroupId",
+      sg.name AS "groupName",
+      o."teacherGrade",
+      o."aiPreliminaryScores"->>'averageScore' AS "aiScoreRaw"
+    FROM "CaseSession" cs
+    JOIN "Case" c ON c.id = cs."caseId"
+    JOIN "StudyGroup" sg ON sg.id = cs."studyGroupId"
+    LEFT JOIN "SessionOutcome" o ON o."caseSessionId" = cs.id
+    WHERE cs.id = ${sessionId}
+    LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  if (!isAdmin && row.departmentId !== departmentId) return null;
+  const [hypo, question, ideas] = await Promise.all([
+    pool`
+      SELECT COUNT(*)::int AS n
+      FROM "Hypothesis" h
+      JOIN "StageSubmission" s ON s.id = h."stageSubmissionId"
+      WHERE s."caseSessionId" = ${sessionId}
+        AND NULLIF(TRIM(h.text), '') IS NOT NULL
+    `,
+    pool`
+      SELECT COUNT(*)::int AS n
+      FROM "StudentQuestion" q
+      JOIN "StageSubmission" s ON s.id = q."stageSubmissionId"
+      WHERE s."caseSessionId" = ${sessionId}
+        AND NULLIF(TRIM(q.text), '') IS NOT NULL
+    `,
+    pool`
+      SELECT
+        gi.id, gi."caseSessionId", gi."caseStageId", gi."guestKey",
+        gi."displayName", gi.kind, gi.text, gi."createdAt", gi."takenAt",
+        st."order" AS "stageOrder", st.title AS "stageTitle"
+      FROM "SessionGuestIdea" gi
+      JOIN "CaseStage" st ON st.id = gi."caseStageId"
+      WHERE gi."caseSessionId" = ${sessionId}
+    `
+  ]);
+  const students = groupGuestStudents(
+    ideas.map((i) => ({
+      guestKey: i.guestKey,
+      displayName: i.displayName,
+      kind: i.kind,
+      text: i.text,
+      takenAt: i.takenAt ? i.takenAt.toISOString() : null,
+      caseStageId: i.caseStageId,
+      stageOrder: i.stageOrder
+    }))
+  );
+  const session = {
+    id: row.id,
+    status: row.status,
+    startedAt: toJsonIsoUtc(row.startedAt) ?? row.startedAt.toISOString(),
+    completedAt: toJsonIsoUtc(row.completedAt) ?? null,
+    durationMin: row.status === "COMPLETED" ? minutesBetween(row.startedAt, row.completedAt) : minutesBetween(row.startedAt, /* @__PURE__ */ new Date()),
+    caseId: row.caseId,
+    caseTitle: row.caseTitle,
+    studyGroupId: row.studyGroupId,
+    groupName: row.groupName,
+    teacherGrade: parseScore(row.teacherGrade),
+    aiScore: parseScore(row.aiScoreRaw),
+    officialHypos: hypo[0]?.n ?? 0,
+    officialQuestions: question[0]?.n ?? 0,
+    guestStudents: students.length,
+    guestIdeas: ideas.length,
+    takenIdeas: ideas.filter((i) => i.takenAt).length,
+    avgStudentScore: avg(students.map((s) => s.score))
+  };
+  return loadSessionDetail(session);
+}
+async function loadSessionDetail(session) {
+  const pool = getSql();
+  const [ideas, stages] = await Promise.all([
+    pool`
+      SELECT
+        gi.id, gi."caseSessionId", gi."caseStageId", gi."guestKey",
+        gi."displayName", gi.kind, gi.text, gi."createdAt", gi."takenAt",
+        st."order" AS "stageOrder", st.title AS "stageTitle"
+      FROM "SessionGuestIdea" gi
+      JOIN "CaseStage" st ON st.id = gi."caseStageId"
+      WHERE gi."caseSessionId" = ${session.id}
+      ORDER BY gi."createdAt" ASC
+    `,
+    pool`
+      SELECT
+        ss."caseSessionId",
+        st."caseId",
+        c.title AS "caseTitle",
+        st."order" AS "stageOrder",
+        st.title AS "stageTitle",
+        ss."openedAt",
+        ss."submittedAt",
+        (
+          SELECT COUNT(*)::int
+          FROM "Hypothesis" h
+          WHERE h."stageSubmissionId" = ss.id
+            AND NULLIF(TRIM(h.text), '') IS NOT NULL
+        ) AS "officialHypos",
+        (
+          SELECT COUNT(*)::int
+          FROM "StudentQuestion" q
+          WHERE q."stageSubmissionId" = ss.id
+            AND NULLIF(TRIM(q.text), '') IS NOT NULL
+        ) AS "officialQuestions"
+      FROM "StageSubmission" ss
+      JOIN "CaseStage" st ON st.id = ss."caseStageId"
+      JOIN "Case" c ON c.id = st."caseId"
+      WHERE ss."caseSessionId" = ${session.id}
+      ORDER BY st."order" ASC
+    `
+  ]);
+  const students = groupGuestStudents(
+    ideas.map((i) => ({
+      guestKey: i.guestKey,
+      displayName: i.displayName,
+      kind: i.kind,
+      text: i.text,
+      takenAt: i.takenAt ? i.takenAt.toISOString() : null,
+      caseStageId: i.caseStageId,
+      stageOrder: i.stageOrder
+    }))
+  ).map((s) => ({
+    guestKey: s.guestKey,
+    displayName: s.displayName,
+    score: s.score,
+    hypothesisCount: s.hypothesisCount,
+    questionCount: s.questionCount,
+    takenCount: s.takenCount,
+    ideas: s.ideas.map((idea) => {
+      const src = ideas.find(
+        (row) => row.text === idea.text && row.kind === idea.kind && row.guestKey === s.guestKey
+      );
+      return {
+        kind: idea.kind,
+        text: idea.text,
+        takenAt: idea.takenAt,
+        stageOrder: src?.stageOrder ?? idea.stageOrder,
+        stageTitle: src?.stageTitle
+      };
+    })
+  }));
+  const stageRows = stages.map((st) => {
+    const stageIdeas = ideas.filter((i) => i.stageOrder === st.stageOrder);
+    return {
+      stageOrder: st.stageOrder,
+      stageTitle: st.stageTitle,
+      openedAt: toJsonIsoUtc(st.openedAt) ?? null,
+      submittedAt: toJsonIsoUtc(st.submittedAt) ?? null,
+      durationMin: minutesBetween(st.openedAt, st.submittedAt),
+      officialHypos: st.officialHypos,
+      officialQuestions: st.officialQuestions,
+      guestIdeas: stageIdeas.length,
+      takenIdeas: stageIdeas.filter((i) => i.takenAt).length
+    };
+  });
+  return { session, students, stages: stageRows };
+}
+
 // server/analytics-routes.ts
 function registerAnalyticsRoutes(app2) {
   app2.get("/api/analytics/departments", async (req, res) => {
@@ -62448,11 +63555,60 @@ function registerAnalyticsRoutes(app2) {
       byCase
     });
   });
+  app2.get("/api/analytics/teacher", async (req, res) => {
+    const a = await requireUser(req);
+    if (sendAuth(res, a)) return;
+    const { session } = a;
+    if (!isStaff(session.user.role)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const qDept = typeof req.query.departmentId === "string" ? req.query.departmentId.trim() : "";
+    const groupId = typeof req.query.groupId === "string" ? req.query.groupId.trim() : "";
+    const caseId = typeof req.query.caseId === "string" ? req.query.caseId.trim() : "";
+    let departmentId = session.user.departmentId;
+    if (session.user.role === "ADMIN") {
+      departmentId = qDept || departmentId;
+    }
+    if (!departmentId) {
+      return errorResponse(res, "\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u043A\u0430\u0444\u0435\u0434\u0440\u0443", 400);
+    }
+    if (session.user.role === "TEACHER" && session.user.departmentId !== departmentId) {
+      return errorResponse(res, "\u041D\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u0430", 403);
+    }
+    const payload = await fetchTeacherAnalytics({
+      departmentId,
+      groupId: groupId || void 0,
+      caseId: caseId || void 0
+    });
+    if (!payload) return errorResponse(res, "\u041A\u0430\u0444\u0435\u0434\u0440\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
+    res.json(payload);
+  });
+  app2.get(
+    "/api/analytics/sessions/:sessionId",
+    async (req, res) => {
+      const a = await requireUser(req);
+      if (sendAuth(res, a)) return;
+      const { session } = a;
+      if (!isStaff(session.user.role)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      const sessionId = typeof req.params.sessionId === "string" ? req.params.sessionId : "";
+      if (!sessionId) return errorResponse(res, "\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 id", 400);
+      const detail = await fetchAnalyticsSessionDetail(
+        sessionId,
+        session.user.departmentId,
+        session.user.role === "ADMIN"
+      );
+      if (!detail) return errorResponse(res, "\u0417\u0430\u043D\u044F\u0442\u0438\u0435 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E", 404);
+      res.json(detail);
+    }
+  );
 }
 
 // server/registerRest.ts
 function registerRestRoutes(app2) {
   registerSessionRoutes(app2);
+  registerJoinRoutes(app2);
   registerMiscRoutes(app2);
   registerAdminRoutes(app2);
   registerAnalyticsRoutes(app2);
@@ -62587,7 +63743,7 @@ function registerCasesRoutes(app2) {
         return errorResponse(res, "\u041A\u0430\u0444\u0435\u0434\u0440\u0430 \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u0435\u0442 \u0441 \u0432\u0430\u0448\u0435\u0439", 403);
       }
     }
-    const id = randomUUID5();
+    const id = randomUUID6();
     const published = body.published ?? false;
     const description = body.description ?? null;
     const teacherKey = body.teacherKey ?? null;
@@ -62850,7 +64006,7 @@ function registerCasesRoutes(app2) {
           await sql`DELETE FROM "CaseStage" WHERE "caseId" = ${caseId}`;
           const sorted = [...body.stages].sort((a2, b2) => a2.order - b2.order);
           for (const st of sorted) {
-            const stageId = randomUUID5();
+            const stageId = randomUUID6();
             await sql`
               INSERT INTO "CaseStage" (id, "caseId", "order", title, "isFinalReveal", "learningGoals")
               VALUES (${stageId}, ${caseId}, ${st.order}, ${st.title}, ${st.isFinalReveal ?? false}, ${st.learningGoals ?? null})
@@ -62858,7 +64014,7 @@ function registerCasesRoutes(app2) {
             for (const b2 of st.blocks) {
               await sql`
                 INSERT INTO "StageBlock" (id, "caseStageId", "order", "blockType", "rawText", "formattedContent", "imageUrl", "imageAlt")
-                VALUES (${randomUUID5()}, ${stageId}, ${b2.order}, ${b2.blockType}, ${b2.rawText ?? null}, ${b2.formattedContent ?? null}, ${b2.imageUrl?.trim() || null}, ${b2.imageAlt ?? null})
+                VALUES (${randomUUID6()}, ${stageId}, ${b2.order}, ${b2.blockType}, ${b2.rawText ?? null}, ${b2.formattedContent ?? null}, ${b2.imageUrl?.trim() || null}, ${b2.imageAlt ?? null})
               `;
             }
           }

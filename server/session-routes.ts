@@ -817,4 +817,29 @@ export function registerSessionRoutes(app: Express) {
       });
     },
   );
+
+  app.delete(
+    "/api/sessions/:sessionId",
+    async (req: Request, res: Response) => {
+      const a = await requireUser(req);
+      if (sendAuth(res, a)) return;
+      const { session } = a;
+      const sessionId = routeParam(req.params.sessionId);
+      if (!sessionId) return errorResponse(res, "Некорректный id сессии", 400);
+      if (!isStaff(session.user.role)) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+      const cs = await loadCaseSessionForPatch(sessionId);
+      if (!cs) return errorResponse(res, "Сессия не найдена", 404);
+      if (
+        session.user.role === "TEACHER" &&
+        !canManageCase(session, cs.case.departmentId)
+      ) {
+        return errorResponse(res, "Нет доступа", 403);
+      }
+      const pool = getSql();
+      await pool`DELETE FROM "CaseSession" WHERE id = ${sessionId}`;
+      res.json({ ok: true });
+    },
+  );
 }
